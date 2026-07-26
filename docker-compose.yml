@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentic-sdlc-control-plane-postgres
+    ports:
+      # Published deliberately: this service owns its own checkpoint store, and
+      # 5433 keeps it clear of any other Postgres on the host.
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: control_plane
+      POSTGRES_USER: control_plane
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - control-plane-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U control_plane -d control_plane"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 512m
+    restart: unless-stopped
+
+  consumer:
+    image: agentic-sdlc-control-plane-consumer:latest
+    build:
+      context: .
+      secrets: [github_pat]
+    container_name: agentic-sdlc-control-plane-consumer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Port 9093 is the event bus's cross-container listener. 9092 advertises
+      # localhost, which inside this container resolves to this container.
+      KAFKA_BOOTSTRAP_SERVERS: host.docker.internal:9093
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: control_plane
+      POSTGRES_USER: control_plane
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      GIT_PAT_FILE: /run/secrets/github_pat
+      WORKSPACES_ROOT: /workspaces
+      FIXTURES_DIR: /fixtures
+      AUDIT_LOG_PATH: /workspaces/.audit/runs.jsonl
+      ORCHESTRATOR_MODE: replay
+      PARKED_RUN_TTL_HOURS: "24"
+      LOG_LEVEL: INFO
+    extra_hosts:
+      # Linux hosts do not resolve host.docker.internal by default; Docker Desktop
+      # does. Declared so the same file works on both.
+      - "host.docker.internal:host-gateway"
+    secrets: [postgres_password, github_pat]
+    volumes:
+      - workspaces:/workspaces
+    mem_limit: 1g
+    restart: unless-stopped
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  github_pat:
+    file: ./secrets/github_pat.txt
+
+volumes:
+  control-plane-postgres-data:
+  workspaces:

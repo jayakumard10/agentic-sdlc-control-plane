@@ -1,0 +1,129 @@
+name: ci
+
+# Both jobs need read access to the private agentic-sdlc-eventbus repo (the
+# agentic-events dependency). Requires a repository secret named
+# EVENTBUS_READ_PAT: a fine-grained, read-only GitHub PAT scoped to
+# agentic-sdlc-eventbus - set it under this repo's Settings > Secrets and
+# variables > Actions before this workflow will pass.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The checkpointer's durability tests need a real Postgres. They are the whole
+    # reason PostgresSaver was chosen over an in-memory saver, so running them
+    # against a service container rather than skipping them in CI is the point.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: control_plane
+          POSTGRES_USER: control_plane
+          POSTGRES_PASSWORD: control_plane
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U control_plane -d control_plane"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5433
+      POSTGRES_DB: control_plane
+      POSTGRES_USER: control_plane
+      POSTGRES_PASSWORD: control_plane
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure read access to the private agentic-events dependency
+        run: |
+          git config --global url."https://${{ secrets.EVENTBUS_READ_PAT }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Configure a git identity for the workspace tests
+        # tools.git_commit_all sets a per-repo identity, but git also needs a
+        # global default present on a bare runner before `git commit` will run.
+        run: |
+          git config --global user.email "ci@local"
+          git config --global user.name "CI"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests with coverage
+        run: pytest --cov=agentic_control_plane --cov-report=term-missing
+
+      - name: Assert the platform carries no tenant-specific vocabulary
+        # This repo is domain-agnostic by requirement, not by convention. Checked
+        # here so a regression fails a build rather than waiting for review.
+        run: |
+          if grep -rniE "url.?shorten|shortened|short.?url|qr.?code|click.analytics" \
+              agentic_control_plane/ tests/; then
+            echo "::error::tenant-specific vocabulary found in a domain-agnostic repo"
+            exit 1
+          fi
+          echo "clean"
+
+  compose-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write local secret files for compose
+        run: |
+          mkdir -p secrets
+          printf '%s' "${{ secrets.EVENTBUS_READ_PAT }}" > secrets/github_pat.txt
+          printf 'ci_local_password' > secrets/postgres_password.txt
+
+      - name: Start this service's own Postgres
+        run: docker compose up -d postgres
+
+      - name: Wait for postgres healthy
+        run: |
+          for i in $(seq 1 30); do
+            status="$(docker inspect --format='{{.State.Health.Status}}' agentic-sdlc-control-plane-postgres || echo starting)"
+            echo "attempt $i: $status"
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "postgres never became healthy" >&2
+          docker compose logs
+          exit 1
+
+      - name: Build the consumer image
+        # Build only: the consumer needs a live event bus to do anything, and this
+        # repo is independently clonable with no sibling checkout, so there is no
+        # broker to point it at here. Cross-repo behaviour is verified locally
+        # against a real broker instead - see the README.
+        run: docker compose build consumer
+
+      - name: Assert the built image carries no credential
+        # The PAT is a BuildKit secret unset within its own layer. Verifying that
+        # rather than trusting it, since a leak here would ship in the image.
+        run: |
+          size=$(docker run --rm agentic-sdlc-control-plane-consumer:latest \
+            sh -c 'stat -c %s /root/.gitconfig 2>/dev/null || echo 0')
+          echo "/root/.gitconfig is $size bytes"
+          if [ "$size" != "0" ]; then
+            echo "::error::build credential persisted into the image"
+            docker run --rm agentic-sdlc-control-plane-consumer:latest cat /root/.gitconfig
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
