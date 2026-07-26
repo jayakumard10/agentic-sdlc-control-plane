@@ -185,21 +185,29 @@ CLI paths (`coder.py`). Those are covered by functional verification instead.
 
 ### Functional verification
 
-Run end-to-end against a real broker and a real Postgres:
+Run end-to-end against a real broker and a real Postgres, from inside the container:
 
 | Check | Result |
 |---|---|
 | Pattern subscription discovers a topic created after startup | PASS — run began ~31s after publish |
-| Drift event → clone → `commit_sha_before` captured | PASS — SHA matched the origin's HEAD |
+| Container consumes a drift event through the event bus's cross-container listener | PASS |
+| Container publishes its outcome event through the same listener | PASS — consumed back off the topic, `producer.instance_id` matching the container hostname |
+| Private-repo HTTPS clone using the mounted PAT | PASS — cloned at commit `335472aa` |
+| A PAT lacking access fails cleanly | PASS — 403 became a `clone_failed` outcome, no crash |
 | Run parks at a real `interrupt()` without blocking the poll loop | PASS |
 | Kafka gate decision resumes the parked run | PASS |
-| Terminal state reached, `run-outcome` published | PASS — message consumed back off the topic |
+| `test_executor` runs a real pytest subprocess against the clone | PASS — 1075ms |
+| Full completion in-container | PASS — commit `9224abcd`, `completed`, workspace removed |
+| Unmounted fixtures safe-stop with a stated reason | PASS |
 | Workspace deleted on terminal state | PASS |
 | Parked run resumed by a *different* process after the original was killed | PASS |
 | Startup reconciliation removes orphaned workspaces | PASS |
 
-Four defects were found by this run and by nothing else, with a full unit suite passing throughout.
-They are written up in `docs/adr/0002` through `0004`.
+Memory, sampled across a full run including the pytest subprocess: **69.6 MiB against the 1 GiB
+limit**, flat throughout; the Postgres container sits at 36 MiB against 512 MiB.
+
+Five defects were found by these runs and by nothing else, with a full unit suite passing
+throughout all of them. They are written up in `docs/adr/0002` through `0006`.
 
 ## Deployment / CI
 
