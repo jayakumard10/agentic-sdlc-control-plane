@@ -5,6 +5,10 @@ the repository of whichever service triggered the run, drives a governed multi-s
 build/test/document workflow against that clone, and pauses at real human-in-the-loop gates before
 continuing.
 
+> **Designing or reviewing rather than running?** Start with
+> [`docs/system-design.md`](docs/system-design.md) — the authoritative design for the whole
+> platform. This README covers how to run and use this service specifically.
+
 ## Tech stack
 
 - **Orchestration**: Python 3.12, LangGraph 1.2.9
