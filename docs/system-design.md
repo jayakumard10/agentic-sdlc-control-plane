@@ -53,28 +53,32 @@ concrete example; its internals are never described, and nothing in the platform
 ## 2. System context
 
 ```mermaid
-flowchart LR
-    subgraph platform["agentic-sdlc-* platform (domain-agnostic)"]
-        EB["agentic-sdlc-eventbus<br/>Kafka broker (KRaft)<br/>+ shared event contract"]
-        MLOPS["agentic-sdlc-mlops<br/>drift detection<br/>DuckDB · Evidently · MLflow"]
-        CP["agentic-sdlc-control-plane<br/>LangGraph orchestrator<br/>+ human gates"]
-    end
-
-    TENANT["Tenant service<br/>(any application plugged into the platform)"]
+flowchart TB
+    TENANT["Tenant service<br/>any application under governance"]
     HUMAN(["Gate reviewer"])
 
-    TENANT -- "request telemetry" --> EB
-    EB -- "consume telemetry" --> MLOPS
-    MLOPS -- "drift detected" --> EB
-    EB -- "consume drift (pattern subscribe)" --> CP
-    CP -- "clone per run, git operations<br/>HTTPS + read-only PAT" --> TENANT
-    HUMAN -- "gate decision" --> EB
-    EB -- "consume decisions" --> CP
-    CP -- "run outcome" --> EB
+    subgraph platform["agentic-sdlc-* platform, domain-agnostic"]
+        EB["agentic-sdlc-eventbus<br/>Kafka broker, shared contract"]
+        MLOPS["agentic-sdlc-mlops<br/>drift detection"]
+        CP["agentic-sdlc-control-plane<br/>orchestration, human gates"]
+    end
 
-    style TENANT fill:#f5f5f5,stroke-dasharray: 5 5
+    TENANT -->|"request telemetry"| EB
+    EB -->|"telemetry"| MLOPS
+    MLOPS -->|"drift detected"| EB
+    EB -->|"drift and decisions"| CP
+    CP -->|"run outcome"| EB
+    HUMAN -->|"gate decision"| EB
+    CP -.->|"clone per run, read-only PAT"| TENANT
+
+    style TENANT fill:#f5f5f5,stroke-dasharray:5 5
     style CP fill:#e8f0ff
 ```
+
+Every solid arrow is a Kafka topic; the only non-Kafka interaction the platform has with a tenant
+is the dashed one, a read-only clone. Both control-plane inbound flows are shown as one edge here
+for legibility — they are separate topics on separate consumer groups, detailed in
+[§5.1](#51-topics) and [§6.1](#61-process-structure).
 
 | Actor | Role |
 |---|---|
@@ -196,7 +200,7 @@ meanings is a standing hazard — see
 
 ```mermaid
 flowchart LR
-    T["trigger consumer<br/>pattern: *.drift-detected.v{n}<br/>group: control-plane-triggers"] -- "validate + enqueue" --> Q(["bounded work queue"])
+    T["trigger consumer<br/>pattern: *.drift-detected.v*<br/>group: control-plane-triggers"] -- "validate + enqueue" --> Q(["bounded work queue"])
     D["decision consumer<br/>control-plane.gate-decision.v1<br/>group: control-plane-decisions"] -- "validate + enqueue" --> Q
     Q --> W["worker — single thread<br/>sole owner of the checkpointer"]
     W -- "clone / run / resume" --> G["LangGraph engine"]

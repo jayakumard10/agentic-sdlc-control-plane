@@ -21,28 +21,29 @@ continuing.
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph platform["agentic-sdlc-* platform (domain-agnostic)"]
-        EB["agentic-sdlc-eventbus<br/>Kafka broker + shared event contract"]
+flowchart TB
+    TENANT["Tenant service<br/>any app plugged into the platform"]
+
+    subgraph platform["agentic-sdlc-* platform, domain-agnostic"]
+        EB["agentic-sdlc-eventbus<br/>Kafka broker, shared contract"]
         MLOPS["agentic-sdlc-mlops<br/>drift detection"]
-        CP["agentic-sdlc-control-plane<br/>(this repo)<br/>LangGraph orchestrator + human gates"]
+        CP["agentic-sdlc-control-plane<br/>this repo: orchestration, human gates"]
     end
 
-    TENANT["Tenant service<br/>(any app plugged into the platform —<br/>e.g. url-shortener-api)"]
+    TENANT -->|"request telemetry"| EB
+    EB -->|"telemetry"| MLOPS
+    MLOPS -->|"drift detected"| EB
+    EB -->|"drift and decisions"| CP
+    CP -->|"run outcome"| EB
+    CP -.->|"clone per run, read-only PAT"| TENANT
 
-    TENANT -- "request-telemetry events" --> EB
-    EB -- "consume telemetry" --> MLOPS
-    MLOPS -- "drift-detected events" --> EB
-    EB -- "consume drift (pattern subscribe)" --> CP
-    CP -- "clone-per-run, git ops<br/>(HTTPS + read-only PAT)" --> TENANT
-    CP -- "gate-decision / run-outcome events" --> EB
-
-    style TENANT fill:#f5f5f5,stroke-dasharray: 5 5
+    style TENANT fill:#f5f5f5,stroke-dasharray:5 5
     style CP fill:#e8f0ff
 ```
 
-`url-shortener-api` appears only as an illustrative example of a tenant service. This repo contains
-no reference to it or to any other specific service — see `docs/adr/0001`.
+A tenant is any application plugged into the platform; nothing here depends on what one does — see
+[`docs/adr/0001`](docs/adr/0001-keep-the-control-plane-domain-agnostic.md). Every solid arrow is a
+Kafka topic; the dashed one is the only non-Kafka interaction, a read-only clone.
 
 ### Internal structure
 
@@ -50,7 +51,7 @@ Two Kafka consumers and one worker. Neither consumer ever executes a run:
 
 ```mermaid
 flowchart LR
-    T["trigger consumer<br/>pattern: *.drift-detected.v{n}"] -- "validate + enqueue" --> Q(["work queue"])
+    T["trigger consumer<br/>pattern: *.drift-detected.v*"] -- "validate + enqueue" --> Q(["work queue"])
     D["decision consumer<br/>control-plane.gate-decision.v1"] -- "validate + enqueue" --> Q
     Q --> W["worker (single thread)<br/>owns the checkpointer"]
     W -- "clone / run / resume" --> G["LangGraph"]
