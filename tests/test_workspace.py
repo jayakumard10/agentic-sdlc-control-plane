@@ -66,6 +66,57 @@ def test_clone_captures_the_commit_the_rollback_path_reverts_to(
     assert (destination / "svc" / "main.py").read_text().strip() == "x = 1"
 
 
+def test_clone_configures_a_committer_identity_on_the_workspace(
+    origin_repo: Path, workspaces: Path
+):
+    """Regression, found by running in a container. tools.git_init_if_needed sets an
+
+    identity only on the path where it runs `git init`; a clone arrives with .git
+    already present, so it is a no-op and nothing configures one. The release gate
+    then fails at `git commit` with "Author identity unknown". Invisible on a
+    developer machine, where a global git identity silently supplies one.
+    """
+    destination, _ = workspace.clone_for_run("run-identity", str(origin_repo), "main")
+
+    name = subprocess.run(
+        ["git", "config", "user.name"], cwd=destination, capture_output=True, text=True
+    ).stdout.strip()
+    email = subprocess.run(
+        ["git", "config", "user.email"], cwd=destination, capture_output=True, text=True
+    ).stdout.strip()
+
+    assert name
+    assert email
+
+
+def test_a_cloned_workspace_can_actually_commit(origin_repo: Path, workspaces: Path):
+    """The assertion that matters: the release gate commits into this workspace, so
+
+    proving `git commit` succeeds is worth more than proving two config keys exist.
+    """
+    destination, _ = workspace.clone_for_run("run-can-commit", str(origin_repo), "main")
+    tools.write_code_files(destination, {"svc/new.py": "y = 2\n"})
+
+    sha = tools.git_commit_all(destination, "a change made by a run")
+
+    assert sha
+    assert tools.git_current_commit(destination) == sha
+
+
+def test_committer_identity_is_configurable(
+    origin_repo: Path, workspaces: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Custom Name")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "custom@example.invalid")
+
+    destination, _ = workspace.clone_for_run("run-custom-identity", str(origin_repo), "main")
+
+    name = subprocess.run(
+        ["git", "config", "user.name"], cwd=destination, capture_output=True, text=True
+    ).stdout.strip()
+    assert name == "Custom Name"
+
+
 def test_clone_failure_raises_and_leaves_no_partial_workspace(
     origin_repo: Path, workspaces: Path
 ):

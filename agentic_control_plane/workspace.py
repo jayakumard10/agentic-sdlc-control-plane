@@ -135,6 +135,7 @@ def clone_for_run(run_id: str, repo_url: str, branch: str) -> tuple[Path, str | 
             f"{_redact(proc.stderr.strip())}"
         )
 
+    _configure_commit_identity(destination)
     commit_sha_before = tools.git_current_commit(destination)
     logger.info(
         "Run %s workspace ready at %s (commit %s)",
@@ -143,6 +144,32 @@ def clone_for_run(run_id: str, repo_url: str, branch: str) -> tuple[Path, str | 
         (commit_sha_before or "unknown")[:8],
     )
     return destination, commit_sha_before
+
+
+def _configure_commit_identity(destination: Path) -> None:
+    """Give the clone a committer identity, because nothing else will.
+
+    `tools.git_init_if_needed` sets one, but only on the path where it actually runs
+    `git init`. A clone arrives with `.git` already present, so that call is a no-op
+    and the identity is never configured - the release gate then fails at
+    `git commit` with "Author identity unknown". It went unnoticed on a developer
+    machine, where a global git identity exists and silently supplies one; the
+    container has none, which is the environment that matters.
+
+    Set per-repository rather than globally: the workspace is what needs the
+    identity, and a global setting would leak across runs.
+    """
+    name = os.environ.get("GIT_COMMITTER_NAME", "agentic-sdlc-control-plane")
+    email = os.environ.get("GIT_COMMITTER_EMAIL", "control-plane@agentic-sdlc.local")
+    for key, value in (("user.name", name), ("user.email", email)):
+        subprocess.run(
+            ["git", "config", key, value],
+            cwd=destination,
+            capture_output=True,
+            text=True,
+            timeout=_CLONE_TIMEOUT_SECONDS,
+            check=True,
+        )
 
 
 def cleanup(run_id: str) -> None:
