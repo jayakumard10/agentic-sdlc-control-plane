@@ -85,6 +85,21 @@ class DecisionWork:
     decision: dict
 
 
+@dataclass
+class _RunTarget:
+    """What an outcome event needs, kept for the life of a run.
+
+    commit_sha_before is captured once, at clone time, and a run reaches its
+    terminal state on a later slice - after a gate, in a different call, possibly in
+    a different process. Holding it here is what stops it being lost in between.
+    """
+
+    repo_url: str
+    branch: str
+    scenario_type: str
+    commit_sha_before: str | None = None
+
+
 def build_trigger_consumer(bootstrap_servers: str):
     from kafka import KafkaConsumer
 
@@ -238,8 +253,9 @@ class Worker:
         self.checkpointer = checkpointer
         self.audit_sink = audit_sink
         self.queue: queue.Queue = queue.Queue(maxsize=WORK_QUEUE_MAXSIZE)
-        # Enough to publish an outcome for a run whose workspace is already gone.
-        self._targets: dict[str, tuple[str, str, str]] = {}
+        # Enough to publish an outcome for a run whose workspace is already gone:
+        # repo, branch, scenario_type, and the commit the clone started from.
+        self._targets: dict[str, _RunTarget] = {}
 
     def submit(self, work) -> bool:
         """Enqueue work without blocking. False if the queue is full."""
@@ -258,15 +274,16 @@ class Worker:
             )
             return
 
-        self._targets[work.run_id] = (work.repo_url, work.branch, work.scenario_type)
+        target = _RunTarget(work.repo_url, work.branch, work.scenario_type)
+        self._targets[work.run_id] = target
 
         try:
-            _path, commit_sha_before = workspace.clone_for_run(
+            _path, target.commit_sha_before = workspace.clone_for_run(
                 work.run_id, work.repo_url, work.branch
             )
         except workspace.CloneError as exc:
             logger.error("Clone failed for run %s: %s", work.run_id, exc)
-            self._publish_outcome(work.run_id, "clone_failed", detail=str(exc), commit_sha=None)
+            self._publish_outcome(work.run_id, "clone_failed", detail=str(exc))
             return
 
         initial = GraphState(
@@ -277,9 +294,9 @@ class Worker:
         try:
             result = runner.start_run(work.run_id, initial, self.checkpointer)
         except Exception as exc:
-            self._fail_run(work.run_id, exc, commit_sha_before)
+            self._fail_run(work.run_id, exc)
             return
-        self._after_slice(work.run_id, result, commit_sha_before)
+        self._after_slice(work.run_id, result)
 
     def handle_decision(self, work: DecisionWork) -> None:
         # Deliberately narrow. An earlier version caught KeyError/ValueError, which
@@ -304,11 +321,11 @@ class Worker:
             )
             return
         except Exception as exc:
-            self._fail_run(work.run_id, exc, None)
+            self._fail_run(work.run_id, exc)
             return
-        self._after_slice(work.run_id, result, None)
+        self._after_slice(work.run_id, result)
 
-    def _fail_run(self, run_id: str, exc: Exception, commit_sha: str | None) -> None:
+    def _fail_run(self, run_id: str, exc: Exception) -> None:
         """Report a run that died inside graph execution, and clean up after it.
 
         Found by a real run and by nothing else: when a node raised, the exception
@@ -319,12 +336,7 @@ class Worker:
         outcome a governed system must not produce.
         """
         logger.exception("Run %s failed during graph execution", run_id)
-        self._publish_outcome(
-            run_id,
-            "failed",
-            detail=f"{type(exc).__name__}: {exc}",
-            commit_sha=commit_sha,
-        )
+        self._publish_outcome(run_id, "failed", detail=f"{type(exc).__name__}: {exc}")
         workspace.cleanup(run_id)
 
     def sweep_stale_runs(self, now: datetime | None = None) -> list[str]:
@@ -338,12 +350,12 @@ class Worker:
         for run_id in stale:
             logger.warning("Run %s exceeded the parked-run TTL; marking stale", run_id)
             self._publish_outcome(
-                run_id, "stale", detail="parked past the TTL with no decision", commit_sha=None
+                run_id, "stale", detail="parked past the TTL with no decision"
             )
             workspace.cleanup(run_id)
         return stale
 
-    def _after_slice(self, run_id: str, result: runner.RunResult, commit_sha: str | None) -> None:
+    def _after_slice(self, run_id: str, result: runner.RunResult) -> None:
         self._record_audit(result)
         if result.parked:
             logger.info(
@@ -353,9 +365,7 @@ class Worker:
                 events.GATE_DECISION_TOPIC,
             )
             return
-        self._publish_outcome(
-            run_id, result.terminal_state or "failed", detail=result.detail, commit_sha=commit_sha
-        )
+        self._publish_outcome(run_id, result.terminal_state or "failed", detail=result.detail)
         workspace.cleanup(run_id)
 
     def _record_audit(self, result: runner.RunResult) -> None:
@@ -376,19 +386,22 @@ class Worker:
         except Exception:
             logger.exception("failed to write audit events; continuing")
 
-    def _publish_outcome(
-        self, run_id: str, terminal_state: str, detail: str, commit_sha: str | None
-    ) -> None:
-        repo_url, branch, scenario_type = self._targets.get(
-            run_id, ("unknown", "unknown", "brownfield")
-        )
+    def _publish_outcome(self, run_id: str, terminal_state: str, detail: str) -> None:
+        """Read the target from the run's record rather than taking it as arguments.
+
+        The commit SHA used to be threaded through the call chain, which lost it for
+        every run that passed through a gate: it is captured at clone time, but the
+        terminal state is reached on a later slice whose caller had no access to it,
+        and so passed None. Every completed run reported a null commit.
+        """
+        target = self._targets.get(run_id) or _RunTarget("unknown", "unknown", "brownfield")
         envelope = events.build_run_outcome(
             run_id=run_id,
             terminal_state=terminal_state,
-            scenario_type=scenario_type,
-            repo_url=repo_url,
-            branch=branch,
-            commit_sha=commit_sha,
+            scenario_type=target.scenario_type,
+            repo_url=target.repo_url,
+            branch=target.branch,
+            commit_sha=target.commit_sha_before,
             detail=detail,
         )
         events.publish_run_outcome(envelope)

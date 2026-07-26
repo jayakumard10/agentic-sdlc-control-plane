@@ -464,6 +464,46 @@ def test_worker_resumes_a_parked_run_and_publishes_the_outcome(
     assert outcomes[0].correlation_id == "run-resume"
 
 
+def test_the_outcome_carries_the_commit_captured_at_clone_time(
+    worker_env: Path, origin: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression, found by reading a real outcome event off the broker.
+
+    commit_sha_before is captured when the run clones, but the run reaches its
+    terminal state on a later slice - after a gate, in a different call. The SHA was
+    threaded through the call chain, so the resume path had no access to it and
+    passed None. Every completed run reported a null commit, which is precisely the
+    field a reviewer needs to know what the run started from.
+    """
+    outcomes = _published(monkeypatch)
+    (worker_env / "fixtures" / "brownfield").mkdir(parents=True)
+    (worker_env / "fixtures" / "brownfield" / "transcript.json").write_text(
+        json.dumps(
+            {
+                "scenario_type": "brownfield",
+                "attempts": [
+                    {"attempt_number": 1, "code_files": {"svc/added.py": "x = 1\n"}, "rationale": "ok"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    origin_head = tools.git_current_commit(origin)
+    checkpointer = build_memory_checkpointer()
+    worker = consumer.Worker(checkpointer)
+    worker.handle_trigger(
+        consumer.TriggerWork("run-sha", "brownfield", str(origin), "main", "fix it")
+    )
+
+    while runner.is_resumable("run-sha", checkpointer):
+        worker.handle_decision(
+            consumer.DecisionWork("run-sha", {"status": "approved", "decided_by": "human"})
+        )
+
+    assert outcomes[-1].payload["terminal_state"] == "completed"
+    assert outcomes[-1].git_target.commit_sha == origin_head
+
+
 def test_workspace_is_cleaned_up_on_a_terminal_state(
     worker_env: Path, origin: Path, monkeypatch: pytest.MonkeyPatch
 ):
