@@ -323,12 +323,12 @@ sequenceDiagram
     T->>T: commit request outcome (own transaction)
     T->>EB: request-telemetry (after commit)
     EB->>M: consume (mlops-telemetry-ingest)
-    M->>M: land in DuckDB; compare reference vs current window
+    M->>M: land in DuckDB, compare reference vs current window
     alt threshold breached
         M->>EB: drift-detected (key = service)
         EB->>CP: consume (control-plane-triggers, pattern)
         CP->>CP: idempotency check on run_id
-        CP->>T: clone into /workspaces/{run_id}; capture commit_sha_before
+        CP->>T: clone per run, capture commit_sha_before
         CP->>PG: checkpoint (thread_id = run_id)
         CP->>CP: graph executes to first gate
         CP->>PG: interrupt() — run parked
