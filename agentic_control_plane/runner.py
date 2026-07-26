@@ -49,6 +49,21 @@ def fixtures_dir() -> Path:
     return Path(os.environ.get("FIXTURES_DIR", "/fixtures"))
 
 
+class UnknownRunError(KeyError):
+    """No checkpoint exists for the run a decision refers to."""
+
+
+class RunAlreadyTerminalError(ValueError):
+    """The run a decision refers to has already finished.
+
+    Distinct types rather than bare KeyError/ValueError because the caller has to
+    tell these two - which are expected and benign - apart from the same builtin
+    types raised from inside graph execution, which are neither. Catching the
+    builtins around the whole resume call silently relabelled real failures as
+    "already terminal" and dropped them.
+    """
+
+
 @dataclass
 class RunResult:
     """What happened to a run during one non-blocking slice of execution."""
@@ -174,11 +189,16 @@ def resume_run(run_id: str, decision: dict, checkpointer) -> RunResult:
     config = _config(run_id)
     snapshot = compiled.get_state(config)
     if snapshot.created_at is None:
-        raise KeyError(f"no checkpoint exists for run {run_id}")
+        raise UnknownRunError(f"no checkpoint exists for run {run_id}")
     if not snapshot.next:
-        raise ValueError(f"run {run_id} has already reached a terminal state")
+        raise RunAlreadyTerminalError(f"run {run_id} has already reached a terminal state")
 
-    logger.info("Resuming run %s with decision %s", run_id, decision.get("decision"))
+    logger.info(
+        "Resuming run %s with decision %s by %s",
+        run_id,
+        decision.get("status"),
+        decision.get("decided_by_identity", decision.get("decided_by")),
+    )
     result = compiled.invoke(Command(resume=decision), config=config)
     return _interpret(run_id, result, compiled.get_state(config))
 

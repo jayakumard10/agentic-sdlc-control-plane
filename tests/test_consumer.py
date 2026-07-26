@@ -156,6 +156,82 @@ def test_parse_decision_carries_the_guardrail_override_through():
     assert work.decision["override_guardrails"] is True
 
 
+def test_a_username_in_decided_by_maps_to_provenance_not_straight_through():
+    """Regression, found by a real end-to-end run and by nothing else.
+
+    The event contract's `decided_by` is an identity - its own worked example
+    carries a username. GraphState's is provenance, constrained to human/replayed.
+    Passing the wire value through failed GateRecord validation for every username
+    that is not literally "human", which is all of them.
+    """
+    work = consumer.parse_decision(
+        _envelope(
+            event_type="gate-decision",
+            payload={"decision": "approve", "decided_by": "jayakumard10"},
+        )
+    )
+
+    assert work.decision["decided_by"] == "human"
+    assert work.decision["decided_by_identity"] == "jayakumard10"
+
+
+def test_the_resulting_decision_actually_builds_a_valid_gate_record():
+    """The assertion that would have caught the above before a live run did.
+
+    Validating the shape parse_decision produces against the model it is destined
+    for, rather than against what the parser happens to emit.
+    """
+    from agentic_control_plane.state import GateRecord
+
+    work = consumer.parse_decision(
+        _envelope(
+            event_type="gate-decision",
+            payload={"decision": "approve", "decided_by": "some-operator"},
+        )
+    )
+
+    record = GateRecord(
+        gate_type="merge_release_approval",
+        status=work.decision["status"],
+        decision_payload=str(work.decision),
+        decided_by=work.decision["decided_by"],
+    )
+
+    assert record.decided_by == "human"
+    assert "some-operator" in record.decision_payload
+
+
+def test_a_replayed_decision_keeps_its_replayed_provenance():
+    work = consumer.parse_decision(
+        _envelope(event_type="gate-decision", payload={"decision": "approve", "decided_by": "replayed"})
+    )
+    assert work.decision["decided_by"] == "replayed"
+
+
+def test_clarified_requirement_is_absent_rather_than_none_when_not_supplied():
+    """Regression: the gate nodes read this with .get(key, current_value), so a
+
+    present-but-None key overwrites the clarified requirement with None, which
+    GraphState rejects. Absence and None are not interchangeable here.
+    """
+    work = consumer.parse_decision(
+        _envelope(event_type="gate-decision", payload={"decision": "approve"})
+    )
+
+    assert "clarified_requirement" not in work.decision
+
+
+def test_clarified_requirement_is_carried_through_when_supplied():
+    work = consumer.parse_decision(
+        _envelope(
+            event_type="gate-decision",
+            payload={"decision": "approve", "clarified_requirement": "do the narrower thing"},
+        )
+    )
+
+    assert work.decision["clarified_requirement"] == "do the narrower thing"
+
+
 def test_parse_decision_rejects_a_payload_with_no_usable_status():
     with pytest.raises(consumer.InvalidMessage):
         consumer.parse_decision(_envelope(event_type="gate-decision", payload={"note": "hi"}))
@@ -405,6 +481,115 @@ def test_workspace_is_cleaned_up_on_a_terminal_state(
         )
 
     assert not workspace.workspace_for("run-cleanup").exists()
+
+
+def test_a_node_failure_becomes_a_reported_failed_run_not_a_vanished_one(
+    worker_env: Path, origin: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression, found by a real run. Two bugs compounded here.
+
+    handle_decision caught KeyError/ValueError around the whole resume call, so the
+    same builtins raised from inside a graph node were logged as "already reached a
+    terminal state" and dropped. And a run that died mid-node was left with no
+    pending work but a run_status of "running" - neither resumable nor terminal - so
+    nothing published an outcome and the next startup reconciled its workspace away.
+
+    A governed system may end a run in failure. It may not lose one.
+    """
+    outcomes = _published(monkeypatch)
+    checkpointer = build_memory_checkpointer()
+    worker = consumer.Worker(checkpointer)
+    worker.handle_trigger(
+        consumer.TriggerWork("run-explode", "brownfield", str(origin), "main", "fix it")
+    )
+    monkeypatch.setattr(
+        runner,
+        "resume_run",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("a node blew up")),
+    )
+
+    worker.handle_decision(consumer.DecisionWork("run-explode", {"status": "approved"}))
+
+    assert len(outcomes) == 1
+    assert outcomes[0].payload["terminal_state"] == "failed"
+    assert "a node blew up" in outcomes[0].payload["detail"]
+    assert not workspace.workspace_for("run-explode").exists()
+
+
+def test_a_failure_starting_a_run_is_reported_too(
+    worker_env: Path, origin: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outcomes = _published(monkeypatch)
+    worker = consumer.Worker(build_memory_checkpointer())
+    monkeypatch.setattr(
+        runner, "start_run", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    worker.handle_trigger(
+        consumer.TriggerWork("run-startfail", "brownfield", str(origin), "main", "fix it")
+    )
+
+    assert outcomes[0].payload["terminal_state"] == "failed"
+    assert "boom" in outcomes[0].payload["detail"]
+
+
+def test_poll_loop_survives_a_transient_client_error(monkeypatch: pytest.MonkeyPatch):
+    """Regression, found by a real run: a selector error inside the Kafka client
+
+    propagated out of poll(), out of the loop, and terminated the process. A whole
+    control plane stopped by one bad file descriptor.
+    """
+    monkeypatch.setattr(consumer, "POLL_RETRY_BACKOFF_SECONDS", 0.01)
+    worker = consumer.Worker(build_memory_checkpointer())
+
+    class _FlakyConsumer:
+        def __init__(self):
+            self.calls = 0
+            self.commits = 0
+
+        def poll(self, timeout_ms=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("Invalid file descriptor: -1")
+            if self.calls == 2:
+                return {"p0": [_FakeMessage(_envelope(correlation_id="run-after-flake"))]}
+            return {}
+
+        def commit(self):
+            self.commits += 1
+
+    flaky = _FlakyConsumer()
+    stop = threading.Event()
+
+    def _stop_soon():
+        while flaky.calls < 3:
+            pass
+        stop.set()
+
+    thread = threading.Thread(target=_stop_soon, daemon=True)
+    thread.start()
+    consumer.poll_loop(flaky, consumer.parse_trigger, worker, stop)
+    thread.join(timeout=2)
+
+    assert worker.queue.qsize() == 1
+    assert worker.queue.get().run_id == "run-after-flake"
+
+
+def test_poll_loop_gives_up_after_repeated_failures(monkeypatch: pytest.MonkeyPatch):
+    """Retrying forever would hide a permanently broken consumer behind a quiet loop."""
+    monkeypatch.setattr(consumer, "POLL_RETRY_BACKOFF_SECONDS", 0.001)
+    monkeypatch.setattr(consumer, "MAX_CONSECUTIVE_POLL_FAILURES", 3)
+    worker = consumer.Worker(build_memory_checkpointer())
+
+    class _BrokenConsumer:
+        def poll(self, timeout_ms=None):
+            raise OSError("socket is gone")
+
+        def commit(self):  # pragma: no cover - never reached
+            pass
+
+    with pytest.raises(OSError):
+        consumer.poll_loop(_BrokenConsumer(), consumer.parse_trigger, worker, threading.Event())
 
 
 def test_a_decision_for_an_unknown_run_is_ignored_not_fatal(

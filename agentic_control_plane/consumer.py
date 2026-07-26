@@ -60,6 +60,11 @@ METADATA_MAX_AGE_MS = 30_000
 # widen it for no benefit, since the worker is serial anyway.
 WORK_QUEUE_MAXSIZE = 32
 
+# A poll failure is retried rather than fatal, but not indefinitely: a consumer that
+# cannot poll at all should fail loudly instead of looping quietly forever.
+MAX_CONSECUTIVE_POLL_FAILURES = 10
+POLL_RETRY_BACKOFF_SECONDS = 2.0
+
 
 class InvalidMessage(ValueError):
     """A message that cannot be processed no matter how many times it is retried."""
@@ -194,16 +199,32 @@ def parse_decision(raw_value: bytes | str) -> DecisionWork:
         "reject": "rejected",
     }.get(status, status)
 
-    return DecisionWork(
-        run_id=envelope.correlation_id,
-        decision={
-            "status": normalized,
-            "decided_by": payload.get("decided_by", "human"),
-            "override_guardrails": bool(payload.get("override_guardrails", False)),
-            "comment": payload.get("comment", ""),
-            "clarified_requirement": payload.get("clarified_requirement"),
-        },
-    )
+    # The event contract and GraphState both call a field `decided_by` and mean
+    # different things by it. On the wire it is an identity - the contract's own
+    # worked example carries a username. In GraphState it is provenance, constrained
+    # to whether a real human or a replayed fixture resolved the gate. Passing the
+    # wire value straight through fails GateRecord validation for every username
+    # that is not the literal string "human", which is all of them.
+    identity = payload.get("decided_by", "human")
+    provenance = "replayed" if identity == "replayed" else "human"
+
+    decision = {
+        "status": normalized,
+        "decided_by": provenance,
+        # Kept, not discarded: who approved a gate is exactly what an audit trail
+        # exists to record. It reaches GateRecord.decision_payload with the rest of
+        # the decision.
+        "decided_by_identity": identity,
+        "override_guardrails": bool(payload.get("override_guardrails", False)),
+        "comment": payload.get("comment", ""),
+    }
+    # Only when actually supplied. A present-but-None key would override the
+    # clarified requirement with None, which GraphState rejects - the gate nodes
+    # read this with .get(key, current_value), so absence and None are not the same.
+    if payload.get("clarified_requirement") is not None:
+        decision["clarified_requirement"] = payload["clarified_requirement"]
+
+    return DecisionWork(run_id=envelope.correlation_id, decision=decision)
 
 
 class Worker:
@@ -253,26 +274,58 @@ class Worker:
             requirement_raw=work.requirement,
             mode="live" if _is_live_mode() else "replay",
         )
-        result = runner.start_run(work.run_id, initial, self.checkpointer)
+        try:
+            result = runner.start_run(work.run_id, initial, self.checkpointer)
+        except Exception as exc:
+            self._fail_run(work.run_id, exc, commit_sha_before)
+            return
         self._after_slice(work.run_id, result, commit_sha_before)
 
     def handle_decision(self, work: DecisionWork) -> None:
+        # Deliberately narrow. An earlier version caught KeyError/ValueError, which
+        # also swallowed the same builtins raised from inside graph execution and
+        # logged a real failure as "already terminal" - the run then sat parked
+        # forever with no error anywhere. Only the two precondition failures are
+        # benign; anything else has to propagate to the worker loop and be logged
+        # with its traceback.
         try:
             result = runner.resume_run(work.run_id, work.decision, self.checkpointer)
-        except KeyError:
+        except runner.UnknownRunError:
             logger.warning(
                 "Decision for unknown run %s; ignoring (it may belong to another "
                 "deployment, or its checkpoint may have been pruned)",
                 work.run_id,
             )
             return
-        except ValueError:
+        except runner.RunAlreadyTerminalError:
             logger.warning(
                 "Decision for run %s which already reached a terminal state; ignoring",
                 work.run_id,
             )
             return
+        except Exception as exc:
+            self._fail_run(work.run_id, exc, None)
+            return
         self._after_slice(work.run_id, result, None)
+
+    def _fail_run(self, run_id: str, exc: Exception, commit_sha: str | None) -> None:
+        """Report a run that died inside graph execution, and clean up after it.
+
+        Found by a real run and by nothing else: when a node raised, the exception
+        propagated to the worker loop, which logged it and moved on. The run was
+        left with no pending work but a run_status of "running" - neither resumable
+        nor terminal - so no outcome was ever published and the next startup
+        reconciled its workspace away. The run simply vanished, which is the one
+        outcome a governed system must not produce.
+        """
+        logger.exception("Run %s failed during graph execution", run_id)
+        self._publish_outcome(
+            run_id,
+            "failed",
+            detail=f"{type(exc).__name__}: {exc}",
+            commit_sha=commit_sha,
+        )
+        workspace.cleanup(run_id)
 
     def sweep_stale_runs(self, now: datetime | None = None) -> list[str]:
         """Expire runs parked past the TTL, so a decision that never comes is visible.
@@ -375,8 +428,30 @@ def poll_loop(consumer, parse, worker: Worker, stop_event: threading.Event) -> N
     retrying it three times only delays the offset commit and holds up the partition
     behind a message that will never succeed.
     """
+    consecutive_failures = 0
     while not stop_event.is_set():
-        batches = consumer.poll(timeout_ms=1000)
+        try:
+            batches = consumer.poll(timeout_ms=1000)
+        except Exception:
+            # A client-side error must not take the service down. Observed for real:
+            # a transient selector error inside the Kafka client propagated out of
+            # poll(), out of this loop, and terminated the process - a whole control
+            # plane stopped by one bad file descriptor. Retried with a bounded
+            # tolerance so a genuinely broken consumer still surfaces rather than
+            # spinning silently forever.
+            consecutive_failures += 1
+            logger.exception(
+                "consumer poll failed (%d/%d consecutive)",
+                consecutive_failures,
+                MAX_CONSECUTIVE_POLL_FAILURES,
+            )
+            if consecutive_failures >= MAX_CONSECUTIVE_POLL_FAILURES:
+                logger.error("consumer poll failed %d times in a row; giving up", consecutive_failures)
+                raise
+            stop_event.wait(POLL_RETRY_BACKOFF_SECONDS)
+            continue
+        consecutive_failures = 0
+
         for _partition, messages in batches.items():
             for message in messages:
                 try:
