@@ -14,3 +14,8 @@ htmlcov/
 # mistake. Never commit these.
 4-repo-migration-PLAN.md
 4-repo-migration-PROMPT.md
+
+# Standing AI-agent instructions - kept local-only by design, never pushed.
+# Claude Code reads this from the filesystem regardless of git tracking, so
+# it still auto-loads every session without needing to be in the repo.
+CLAUDE.md
