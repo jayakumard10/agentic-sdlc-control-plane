@@ -1,0 +1,10 @@
+# pydantic is pinned by agentic-events==0.1.0 (exact ==2.10.4); it is not a free
+# choice here. Bumping it requires re-releasing the shared contract package first.
+langgraph==1.2.9
+langgraph-checkpoint-postgres==3.0.5
+psycopg[binary]==3.2.3
+pydantic==2.10.4
+kafka-python-ng==2.2.3
+agentic-events @ git+https://github.com/jayakumard10/agentic-sdlc-eventbus.git@v0.1.0
+pytest==8.3.4
+pytest-cov==7.1.0

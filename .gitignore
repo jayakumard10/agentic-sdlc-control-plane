@@ -9,6 +9,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Ephemeral clone-per-run workspaces, when running outside a container
+workspaces/
+
+# Real secret files - only the .example templates are tracked
+secrets/*.txt
+
 # Cross-repo planning docs live outside this repo's tree, so they can't normally
 # end up here — this is a defensive backstop in case one is ever copied in by
 # mistake. Never commit these.
