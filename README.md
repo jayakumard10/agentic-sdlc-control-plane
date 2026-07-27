@@ -131,6 +131,40 @@ docker logs -f agentic-sdlc-control-plane-consumer
 Expect `Subscribed to pattern .*\.drift-detected\.v[0-9]+`. A newly created drift topic is
 discovered within about 30 seconds, governed by `metadata.max.age.ms`.
 
+### Running the whole platform
+
+This service does something observable only when the rest of the platform is producing events.
+[`scripts/demo-platform.ps1`](scripts/demo-platform.ps1) brings all four repositories up in
+dependency order, waiting on a real readiness signal between stages rather than a fixed sleep —
+container health where a healthcheck exists, a specific log line for the two consumer services
+that have none.
+
+It requires all four repositories checked out side by side. That is a prerequisite of the script
+only: each repository still starts on its own, and no compose file references another.
+
+```powershell
+.\scripts\demo-platform.ps1 -Build
+```
+
+Drop `-Build` on subsequent runs. Add `-Demo` to drive one signal all the way through — real
+traffic to the tenant service, a drift signal, a clone, a human gate, a decision, and the outcome
+event read back off the broker:
+
+```powershell
+.\scripts\demo-platform.ps1 -Demo
+```
+
+`-Status` prints the state and health of every platform container; `-Down` stops everything.
+
+Only the drift signal is injected. Genuine detection compares a trailing 7-day reference window
+against the current hour, which no demo can populate. Everything after that point is the
+production path: real pattern subscription, real clone, real `interrupt()`, real resume from
+Postgres. The demo also mounts a synthetic fixture so the run reaches `completed` instead of
+safe-stopping at the coder node — see [`docs/adr/0001`](docs/adr/0001-keep-the-control-plane-domain-agnostic.md)
+for why the shipped image has none.
+
+A cold start to `completed` takes roughly 90 seconds.
+
 ## Local development
 
 ```bash

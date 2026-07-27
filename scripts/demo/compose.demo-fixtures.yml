@@ -1,0 +1,19 @@
+# Compose override used only by the end-to-end demo.
+#
+# The shipped image deliberately has an empty /fixtures (docs/adr/0001): replay fixtures are
+# recordings of work on one specific service, so a domain-agnostic platform cannot ship them and
+# FIXTURES_DIR is a mount point. Without a fixture, a run reaches the coder node and safe-stops
+# with a stated reason - correct behaviour, but it makes the demo end on what looks like a
+# failure.
+#
+# This override mounts a synthetic, domain-neutral fixture read-only so the demo run reaches
+# `completed` and exercises the release gate and the commit that follows it. It is not part of
+# the service's normal deployment.
+#
+# Applied automatically by demo-platform.ps1 -Demo.
+
+services:
+  consumer:
+    volumes:
+      - workspaces:/workspaces
+      - ./scripts/demo/fixtures:/fixtures:ro

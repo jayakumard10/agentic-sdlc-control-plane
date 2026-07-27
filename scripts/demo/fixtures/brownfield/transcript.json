@@ -1,0 +1,14 @@
+{
+  "scenario_type": "brownfield",
+  "_comment": "Synthetic, deliberately domain-neutral demo fixture. The platform ships no fixtures at FIXTURES_DIR by default (see docs/adr/0001) because real replay fixtures are recordings of work on one specific service. This one exists only so the end-to-end demo reaches a completed terminal state instead of safe-stopping at the coder node, and it is mounted explicitly by the demo compose override rather than baked into the image.",
+  "attempts": [
+    {
+      "attempt_number": 1,
+      "rationale": "Demo attempt: add a small module and a passing test for it.",
+      "code_files": {
+        "demo_generated.py": "\"\"\"Added by an agentic-sdlc control-plane run.\"\"\"\n\n\ndef answer() -> int:\n    return 42\n",
+        "tests/test_demo_generated.py": "from demo_generated import answer\n\n\ndef test_answer():\n    assert answer() == 42\n"
+      }
+    }
+  ]
+}

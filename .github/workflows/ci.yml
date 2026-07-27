@@ -78,6 +78,12 @@ jobs:
       - name: Assert the platform carries no tenant-specific vocabulary
         # This repo is domain-agnostic by requirement, not by convention. Checked
         # here so a regression fails a build rather than waiting for review.
+        #
+        # Scope is the package and its tests, deliberately - not the whole repo.
+        # scripts/ holds cross-repo demo tooling that must know every repository by
+        # name, including tenant specifics, because demonstrating a platform needs a
+        # concrete tenant to demonstrate it against. That tooling is never imported
+        # by the package, which is where the rule actually applies.
         run: |
           if grep -rniE "url.?shorten|shortened|short.?url|qr.?code|click.analytics" \
               agentic_control_plane/ tests/; then
