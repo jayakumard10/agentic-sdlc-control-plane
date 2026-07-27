@@ -7,7 +7,9 @@ off, and everything expensive or slow happens somewhere the loop cannot observe.
 from __future__ import annotations
 
 import json
+import queue
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -253,9 +255,16 @@ class _FakeMessage:
 
 
 class _FakeConsumer:
+    """Canned batches, no position. Fine for tests where the queue never fills;
+
+    see `_StatefulFakeConsumer` for the backpressure path, which needs a real position.
+    """
+
     def __init__(self, batches: list[dict]):
         self._batches = list(batches)
         self.commits = 0
+        self.seeks: list[tuple] = []
+        self._paused: set = set()
 
     def poll(self, timeout_ms=None):
         if self._batches:
@@ -264,6 +273,18 @@ class _FakeConsumer:
 
     def commit(self):
         self.commits += 1
+
+    def pause(self, *partitions):
+        self._paused.update(partitions)
+
+    def resume(self, *partitions):
+        self._paused.difference_update(partitions)
+
+    def paused(self):
+        return set(self._paused)
+
+    def seek(self, partition, offset):
+        self.seeks.append((partition, offset))
 
 
 def _drain(fake_consumer, parse, worker):
@@ -343,6 +364,127 @@ def test_submit_reports_failure_rather_than_blocking_when_the_queue_is_full():
         assert worker.submit(consumer.TriggerWork(str(i), "brownfield", "u", "main", "r")) is True
 
     assert worker.submit(consumer.TriggerWork("overflow", "brownfield", "u", "main", "r")) is False
+
+
+class _StatefulFakeConsumer:
+    """A fake with the Kafka semantics the backpressure path actually depends on.
+
+    Specifically a *position* per partition that `poll` advances. The simpler fake
+    above returns canned batches and has no position, which would make the rewind
+    invisible: a test using it would pass whether or not `seek` were called at all.
+    Offsets are list indices here, so a rewind to `message.offset` re-reads that
+    message.
+    """
+
+    def __init__(self, records: dict, stop_event=None, stop_after_polls: int | None = None):
+        self._records = records
+        self._positions = {p: 0 for p in records}
+        self._paused: set = set()
+        self._stop_event = stop_event
+        self._stop_after_polls = stop_after_polls
+        self.polls = 0
+        self.commits = 0
+        self.seeks: list[tuple] = []
+        self.committed_positions: dict = {}
+
+    def poll(self, timeout_ms=None, max_records: int = 8):
+        self.polls += 1
+        if self._stop_event is not None and self.polls >= (self._stop_after_polls or 0):
+            self._stop_event.set()
+        batches = {}
+        for partition, messages in self._records.items():
+            if partition in self._paused:
+                continue
+            start = self._positions[partition]
+            batch = messages[start : start + max_records]
+            if batch:
+                batches[partition] = batch
+                self._positions[partition] = start + len(batch)
+        if not batches:
+            time.sleep(0.01)  # stand in for the real poll's timeout
+        return batches
+
+    def pause(self, *partitions):
+        self._paused.update(partitions)
+
+    def resume(self, *partitions):
+        self._paused.difference_update(partitions)
+
+    def paused(self):
+        return set(self._paused)
+
+    def seek(self, partition, offset):
+        self._positions[partition] = offset
+        self.seeks.append((partition, offset))
+
+    def commit(self):
+        self.commits += 1
+        self.committed_positions = dict(self._positions)
+
+
+def _trigger_messages(count: int, partition_offset: int = 0) -> list:
+    return [
+        _FakeMessage(_envelope(correlation_id=f"run-{i}"), offset=i + partition_offset)
+        for i in range(count)
+    ]
+
+
+def test_a_full_queue_rewinds_and_pauses_instead_of_committing_past_the_message():
+    """The regression this exists for: a full queue used to drop the message and
+
+    commit anyway, so the trigger was gone - no redelivery, no outcome event, and a
+    silent contradiction of the "a run is never lost" property. Both halves matter.
+    Skipping the commit alone is not enough, because poll() has already advanced the
+    position past the message; without the rewind it would be skipped for the life of
+    the process.
+    """
+    worker = consumer.Worker(build_memory_checkpointer())
+    for i in range(consumer.WORK_QUEUE_MAXSIZE):
+        worker.submit(consumer.TriggerWork(f"prefill-{i}", "brownfield", "u", "main", "r"))
+    assert worker.queue.full()
+
+    stop = threading.Event()
+    fake = _StatefulFakeConsumer(
+        {"p0": _trigger_messages(3)}, stop_event=stop, stop_after_polls=1
+    )
+
+    consumer.poll_loop(fake, consumer.parse_trigger, worker, stop)
+
+    assert fake.seeks == [("p0", 0)], "must rewind to the message it could not accept"
+    assert fake.paused() == {"p0"}, "must stop fetching a partition it cannot drain"
+    assert fake.commits == 0, "must not commit past a message it did not accept"
+
+
+def test_no_trigger_is_lost_when_the_queue_fills():
+    """The property, end to end: every message published is handed to the worker
+
+    exactly once and in order, across as many pause/resume cycles as it takes.
+    """
+    total = consumer.WORK_QUEUE_MAXSIZE * 2 + 5
+    worker = consumer.Worker(build_memory_checkpointer())
+    fake = _StatefulFakeConsumer({"p0": _trigger_messages(total)})
+
+    stop = threading.Event()
+    loop = threading.Thread(
+        target=consumer.poll_loop,
+        args=(fake, consumer.parse_trigger, worker, stop),
+        daemon=True,
+    )
+    loop.start()
+
+    # Stand in for the worker: drain items as they are handed over.
+    seen: list[str] = []
+    deadline = time.monotonic() + 20
+    while len(seen) < total and time.monotonic() < deadline:
+        try:
+            seen.append(worker.queue.get(timeout=0.1).run_id)
+        except queue.Empty:
+            continue
+    stop.set()
+    loop.join(timeout=5)
+
+    assert seen == [f"run-{i}" for i in range(total)], "every trigger, once, in order"
+    assert fake.seeks, "the queue must actually have filled, or this proves nothing"
 
 
 # --- worker ----------------------------------------------------------------
@@ -598,6 +740,9 @@ def test_poll_loop_survives_a_transient_client_error(monkeypatch: pytest.MonkeyP
         def commit(self):
             self.commits += 1
 
+        def paused(self):
+            return set()
+
     flaky = _FlakyConsumer()
     stop = threading.Event()
 
@@ -627,6 +772,9 @@ def test_poll_loop_gives_up_after_repeated_failures(monkeypatch: pytest.MonkeyPa
 
         def commit(self):  # pragma: no cover - never reached
             pass
+
+        def paused(self):
+            return set()
 
     with pytest.raises(OSError):
         consumer.poll_loop(_BrokenConsumer(), consumer.parse_trigger, worker, threading.Event())

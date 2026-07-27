@@ -212,7 +212,7 @@ defined terminal state with outcome telemetry. See `docs/adr/0001`.
 pytest --cov=agentic_control_plane --cov-report=term-missing
 ```
 
-208 tests, 92% statement coverage. The durability tests need a reachable Postgres and skip without
+210 tests, 92% statement coverage. The durability tests need a reachable Postgres and skip without
 one; run them against the compose Postgres:
 
 ```bash

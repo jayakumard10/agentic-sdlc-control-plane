@@ -24,6 +24,10 @@ library, by assuming the answer rather than checking it. Runs therefore execute
 serially, which is the right trade at this scale and is a bounded change to make
 later (a pool of workers, each with its own checkpointer) if it stops being.
 
+**A full queue is backpressure, not loss.** The queue is bounded and the worker is
+serial, so it can fill. When it does, the message is left uncommitted, its partition is
+rewound to it and paused, and it is redelivered once the worker drains. See `poll_loop`.
+
 **The gap this leaves, stated plainly**: offsets are committed once work is enqueued,
 not once it completes. A crash with items still queued loses those triggers. The
 alternative - committing only after completion - puts a clone and a full graph
@@ -59,6 +63,12 @@ METADATA_MAX_AGE_MS = 30_000
 # Bounded: see the module docstring's note on the loss window. A larger queue would
 # widen it for no benefit, since the worker is serial anyway.
 WORK_QUEUE_MAXSIZE = 32
+
+# Partitions are resumed once the queue has drained to here, not the moment a single
+# slot frees. Resuming at the first free slot would fetch a batch, fill up, and pause
+# again on nearly every cycle; a low-water mark makes the pause/resume cycle
+# proportional to how much the worker has actually got through.
+WORK_QUEUE_RESUME_THRESHOLD = WORK_QUEUE_MAXSIZE // 2
 
 # A poll failure is retried rather than fatal, but not indefinitely: a consumer that
 # cannot poll at all should fail loudly instead of looping quietly forever.
@@ -258,13 +268,27 @@ class Worker:
         self._targets: dict[str, _RunTarget] = {}
 
     def submit(self, work) -> bool:
-        """Enqueue work without blocking. False if the queue is full."""
+        """Enqueue work without blocking. False if the queue is full.
+
+        A False here is backpressure, not loss: the caller must leave the offset
+        uncommitted and rewind, so the message is redelivered once the worker has
+        drained. See `poll_loop`.
+        """
         try:
             self.queue.put_nowait(work)
             return True
         except queue.Full:
-            logger.error("work queue is full, dropping %r", work)
+            logger.warning(
+                "work queue is full (%d items); applying backpressure rather than "
+                "accepting %r",
+                self.queue.qsize(),
+                work,
+            )
             return False
+
+    def has_capacity(self) -> bool:
+        """True once the queue has drained enough to resume fetching."""
+        return self.queue.qsize() <= WORK_QUEUE_RESUME_THRESHOLD
 
     def handle_trigger(self, work: TriggerWork) -> None:
         if runner.already_known(work.run_id, self.checkpointer):
@@ -432,6 +456,19 @@ def _is_live_mode() -> bool:
     return os.environ.get("ORCHESTRATOR_MODE", "replay").lower() == "live"
 
 
+def _resume_drained_partitions(consumer, worker: Worker) -> None:
+    """Resume partitions paused by backpressure, once the worker has caught up."""
+    paused = consumer.paused()
+    if not paused or not worker.has_capacity():
+        return
+    consumer.resume(*paused)
+    logger.info(
+        "work queue drained to %d item(s); resumed %d paused partition(s)",
+        worker.queue.qsize(),
+        len(paused),
+    )
+
+
 def poll_loop(consumer, parse, worker: Worker, stop_event: threading.Event) -> None:
     """Read, validate, hand off, commit, repeat. Never executes anything.
 
@@ -440,9 +477,20 @@ def poll_loop(consumer, parse, worker: Worker, stop_event: threading.Event) -> N
     that does not satisfy the envelope contract fails identically every time, so
     retrying it three times only delays the offset commit and holds up the partition
     behind a message that will never succeed.
+
+    **A full work queue is backpressure, not loss.** The worker is serial and the queue
+    is bounded, so it can fill. When it does, the message that could not be accepted is
+    left uncommitted *and* the partition is rewound to it, because `poll()` has already
+    advanced the in-memory position past it - skipping the commit alone would drop the
+    message for the life of this process and only redeliver it after a restart. The
+    partition is then paused so the loop does not spin re-fetching work it cannot take,
+    and resumed once the worker has drained. Processing of that partition stops at the
+    first rejected message: accepting anything behind it would put the redelivered
+    message out of order relative to work already queued.
     """
     consecutive_failures = 0
     while not stop_event.is_set():
+        _resume_drained_partitions(consumer, worker)
         try:
             batches = consumer.poll(timeout_ms=1000)
         except Exception:
@@ -465,7 +513,8 @@ def poll_loop(consumer, parse, worker: Worker, stop_event: threading.Event) -> N
             continue
         consecutive_failures = 0
 
-        for _partition, messages in batches.items():
+        accepted_everything = True
+        for partition, messages in batches.items():
             for message in messages:
                 try:
                     work = parse(message.value)
@@ -478,10 +527,32 @@ def poll_loop(consumer, parse, worker: Worker, stop_event: threading.Event) -> N
                     )
                     events.publish_to_dlq(message.value, message.topic, str(exc))
                 else:
-                    worker.submit(work)
-        if batches:
+                    if not worker.submit(work):
+                        # Rewind to the message we could not take, then stop fetching
+                        # this partition until the worker drains. Both are required:
+                        # the rewind because poll() has already moved the position past
+                        # it, the pause so this loop does not spin on work it cannot
+                        # accept.
+                        consumer.seek(partition, message.offset)
+                        consumer.pause(partition)
+                        logger.warning(
+                            "backpressure on %s: rewound to offset %s and paused",
+                            message.topic,
+                            message.offset,
+                        )
+                        accepted_everything = False
+                        break
+        if batches and accepted_everything:
             # Committed past the batch once it is queued, including any message
             # forwarded to the DLQ - a poison message must never block its partition.
+            #
+            # Skipped entirely when anything was rejected, rather than committing the
+            # partitions that were fine. Those messages stay uncommitted and are
+            # redelivered after a crash, which is harmless: a redelivered trigger
+            # carries a run_id the checkpointer already knows and is a no-op. The
+            # alternative - per-partition offsets - buys precision this platform has no
+            # use for at one partition per topic, in exchange for coupling this module
+            # to the client's offset types.
             consumer.commit()
 
 

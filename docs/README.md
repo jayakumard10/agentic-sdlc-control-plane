@@ -27,6 +27,7 @@ reasoning where nobody looks for it. An ADR is a stable address for a decision.
 | [0004](adr/0004-the-poll-loop-tolerates-transient-client-errors.md) | Poll-loop tolerance of transient client errors |
 | [0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md) | Single-threaded worker; offset commit timing |
 | [0006](adr/0006-configure-the-committer-identity-on-a-cloned-workspace.md) | Committer identity on a cloned workspace |
+| [0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md) | A full work queue is backpressure, not loss |
 
 New ADRs are numbered sequentially and never edited once merged. A decision that is later reversed
 gets a new ADR that supersedes the old one, so the reasoning at the time stays legible.

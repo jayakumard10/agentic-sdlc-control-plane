@@ -48,9 +48,10 @@ produced by running the thing, not by reasoning about it.
 
 ## 3. The measured result
 
-**Ten of the platform's thirteen ADRs document defects found only by running real infrastructure.**
-The other three record design decisions. Every one of the ten shares a property: a green unit suite
-was passing at the time, and no reasonable addition to it would have caught the defect.
+**Eleven of the platform's fourteen ADRs document defects found only by running real
+infrastructure, or by reading the code path an external reviewer pointed at.** The other three
+record design decisions. Every one of the eleven shares a property: a green unit suite was passing
+at the time, and no reasonable addition to it would have caught the defect.
 
 | ADR | Repository | Defect | Found by |
 |---|---|---|---|
@@ -58,6 +59,7 @@ was passing at the time, and no reasonable addition to it would have caught the 
 | [0003](adr/0003-a-failed-run-must-be-reported-never-lost.md) | control-plane | A run that failed mid-execution vanished: neither resumable nor terminal, no outcome published, workspace reclaimed | End-to-end run against a live broker and checkpointer |
 | [0004](adr/0004-the-poll-loop-tolerates-transient-client-errors.md) | control-plane | One bad file descriptor inside the Kafka client's selector terminated the whole service | A real run left running long enough to hit it |
 | [0006](adr/0006-configure-the-committer-identity-on-a-cloned-workspace.md) | control-plane | No run could reach `completed` in the container — `Author identity unknown` at the release gate | Running in the container, which has no ambient git identity |
+| [0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md) | control-plane | A full work queue dropped the trigger *and* committed past it — no run, no redelivery, no outcome event | An external reviewer pointing at the line; the loss path was worse than the one already documented |
 | `0001` | mlops | DuckDB rejects a second connection to the same file from the same process, contradicting the design assumption | The real container against a live broker |
 | `0002` | mlops | Background drift thread died with a `TypeError` on every start; the container still reported healthy | Inspecting real container logs |
 | `0003` | mlops | `mem_limit` was a plausible round number, not a measurement; the container crash-looped on OOM | `docker stats` at increasing ceilings |
@@ -85,6 +87,7 @@ is the transferable part:
 | **A supertype was caught and relabelled** | `KeyError`/`ValueError` were caught as benign preconditions, swallowing the same builtins raised inside nodes. |
 | **A resource limit was guessed** | `mem_limit` was a round number rather than a measurement. |
 | **Only long-running execution reached it** | A socket lifecycle error inside the client's event loop. |
+| **The contract was tested; the call site was not** | `submit()` was written, documented, and tested to report a full queue. A passing test asserted it returned `False`. Nothing tested what the caller did with that answer — it discarded it and committed anyway. |
 
 Every one of these is invisible to a unit test *by construction*, not by oversight. That is the
 argument for the practice, and it is why coverage percentage is reported alongside functional
@@ -108,6 +111,10 @@ The rules the nine defects produced, each now applied platform-wide:
 5. **Cross-repository integration points are verified from the position the calling component
    actually occupies** — a repository's own tests passing proves nothing about the seam
    (eventbus ADR 0001).
+
+6. **Where a function reports a condition its caller must act on, a test asserts what the caller
+   does** — not only that the function reports it correctly (ADR 0007). A verified contract says
+   nothing about a call site honouring it.
 
 Rule 5 is the one with the widest reach, and the platform's remaining known gap sits against it:
 the drift-detection path is exercised from a published event onward, but the producing side has not

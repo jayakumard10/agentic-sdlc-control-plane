@@ -1,6 +1,6 @@
 # Agentic SDLC Platform — System Design
 
-**Status:** Current · **Last verified:** 2026-07-26 · **Owner:** Platform engineering
+**Status:** Current · **Last verified:** 2026-07-27 · **Owner:** Platform engineering
 
 This is the authoritative design document for the `agentic-sdlc-*` platform. It describes the
 system as built and verified, not as proposed. Content is stated as fact only where it has been
@@ -229,6 +229,10 @@ Offsets commit on enqueue rather than on completion. The trade-off, and the boun
 leaves, is documented in
 [ADR 0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md).
 
+The queue is bounded, so it can fill. When it does the message is left uncommitted, its partition
+is rewound to it and paused, and it is redelivered once the worker drains — backpressure rather
+than loss, see [ADR 0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md).
+
 ### 6.2 Workflow graph
 
 ```mermaid
@@ -365,6 +369,7 @@ construction and by policy.
 | **Clone failure** | Terminal `clone_failed` with the underlying git error; no partial workspace left behind. |
 | **Crash between clone and checkpoint** | Startup reconciliation removes the orphaned workspace. |
 | **Broker unavailable at publish** | Producer construction is bounded on a background thread; publish failures are logged and counted, never raised. A broker outage cannot turn a completed run into a failed one. |
+| **Work queue full** | Backpressure, not loss. The message is left uncommitted, its partition rewound to it and paused, and it is redelivered once the worker drains. Previously the message was dropped and the offset committed past it, so the trigger was lost with no outcome event — [ADR 0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md). |
 | **Process dies with work queued** | Bounded loss window, documented rather than hidden. Mitigated by a small queue, a drain on shutdown that logs any loss, and the recurrence property of drift — [ADR 0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md). |
 
 ---
@@ -469,7 +474,7 @@ them. See [ADR 0001](adr/0001-keep-the-control-plane-domain-agnostic.md).
 
 | Repository | Tests | Coverage | Notes |
 |---|---|---|---|
-| `agentic-sdlc-control-plane` | 208 | 92% | 0 skipped in CI; gate durability runs against a real PostgreSQL service container |
+| `agentic-sdlc-control-plane` | 210 | 92% | 0 skipped in CI; gate durability runs against a real PostgreSQL service container |
 | `url-shortener-api` (tenant) | 35 | 92% | |
 | `agentic-sdlc-mlops` | 24 | 75% | |
 | `agentic-sdlc-eventbus` | 8 | 100% | Contract package; enforced at 100% in CI |
@@ -535,3 +540,4 @@ existed.
 | [0004](adr/0004-the-poll-loop-tolerates-transient-client-errors.md) | Poll-loop tolerance of transient client errors |
 | [0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md) | Single-threaded worker; offset commit timing |
 | [0006](adr/0006-configure-the-committer-identity-on-a-cloned-workspace.md) | Committer identity on a cloned workspace |
+| [0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md) | A full work queue is backpressure, not loss |
