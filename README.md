@@ -6,8 +6,9 @@ build/test/document workflow against that clone, and pauses at real human-in-the
 continuing.
 
 > **Designing or reviewing rather than running?** Start with
-> [`docs/system-design.md`](docs/system-design.md) — the authoritative design for the whole
-> platform. This README covers how to run and use this service specifically.
+> [`docs/executive-summary.md`](docs/executive-summary.md) for a two-page orientation to the whole
+> platform, then [`docs/system-design.md`](docs/system-design.md) for the authoritative design.
+> This README covers how to run and use this service specifically.
 
 ## Tech stack
 
@@ -211,7 +212,7 @@ defined terminal state with outcome telemetry. See `docs/adr/0001`.
 pytest --cov=agentic_control_plane --cov-report=term-missing
 ```
 
-205 tests, 92% statement coverage. The durability tests need a reachable Postgres and skip without
+208 tests, 92% statement coverage. The durability tests need a reachable Postgres and skip without
 one; run them against the compose Postgres:
 
 ```bash

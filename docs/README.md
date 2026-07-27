@@ -2,6 +2,7 @@
 
 | Document | Purpose | Audience |
 |---|---|---|
+| [executive-summary.md](executive-summary.md) | Two-page orientation: what the platform does, what was delivered, what is proven, what it does not do. **Start here.** | Anyone, technical or not |
 | [system-design.md](system-design.md) | Authoritative design for the whole platform: context, components, event contract, control-plane internals, reliability, security, operations, verification. | Anyone needing to understand how the system works |
 | [adr/](adr/) | One record per significant decision, in Context / Decision / Consequences form. | Anyone asking why something is the way it is |
 | [ai-engineering-practice.md](ai-engineering-practice.md) | How this platform was built with AI assistance, and the evidence for what caught the mistakes. | Anyone assessing the engineering process rather than the system |
