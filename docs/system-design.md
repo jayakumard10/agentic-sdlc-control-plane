@@ -393,20 +393,29 @@ only in that the event bus should exist before producers.
 
 All containers running simultaneously, measured with `docker stats` on 2026-07-26:
 
+All containers running simultaneously, re-measured on 2026-07-27 after `mlflow` was re-sized (see
+mlops ADR 0004):
+
 | Container | Repository | Measured | Limit | Utilisation |
 |---|---|---|---|---|
-| `mlflow` | mlops | 2.087 GiB | 3 GiB | 69.6% |
-| `mlops-consumer` | mlops | 290.5 MiB | 768 MiB | 37.8% |
-| `kafka` | eventbus | 282.4 MiB | 2 GiB | 13.8% |
-| tenant API | tenant | 75.5 MiB | 512 MiB | 14.8% |
-| `control-plane-consumer` | control-plane | 69.6 MiB | 1 GiB | 6.8% |
-| tenant `postgres` | tenant | 41.6 MiB | 512 MiB | 8.1% |
-| `control-plane-postgres` | control-plane | 36.0 MiB | 512 MiB | 7.0% |
-| **Total** | | **2.86 GiB** | 8.25 GiB | **34.7%** |
+| `mlflow` | mlops | 317.9 MiB | 1 GiB | 31.0% |
+| `mlops-consumer` | mlops | 302.3 MiB | 768 MiB | 39.4% |
+| `kafka` | eventbus | 242.8 MiB | 2 GiB | 11.9% |
+| `control-plane-consumer` | control-plane | 71.9 MiB | 1 GiB | 7.0% |
+| tenant API | tenant | 69.8 MiB | 512 MiB | 13.6% |
+| `control-plane-postgres` | control-plane | 24.5 MiB | 512 MiB | 4.8% |
+| tenant `postgres` | tenant | 23.5 MiB | 512 MiB | 4.6% |
+| **Total** | | **1.03 GiB** | 6.25 GiB | **16.4%** |
 
-Limits sum above the 8 GiB development allocation while actual usage is roughly a third of that.
-This is not a defect: `mem_limit` is a cap, not a reservation. Limits are deliberately generous so
-a spike degrades rather than triggers an OOM kill. Only `mlflow` runs close to its ceiling.
+`mem_limit` is a cap, not a reservation, and limits are deliberately generous so a spike degrades
+rather than triggering an OOM kill. Every service now sits below 40% of its ceiling, and the
+ceilings themselves sum to 6.25 GiB — within the 8 GiB development allocation rather than above it.
+
+The previous measurement (2026-07-26) totalled 2.86 GiB against 8.25 GiB of ceilings, of which
+`mlflow` alone was 2.087 GiB — 73% of the platform, on a service nothing wrote to. That was a
+correctly measured number attached to a feature this deployment never used: MLflow 3.x starts an
+async job subsystem whenever its backend store is a database. Disabling it took the service to
+312 MiB and the platform to a third of its former footprint.
 
 ### 10.2 Configuration
 

@@ -4,6 +4,7 @@
 |---|---|---|
 | [system-design.md](system-design.md) | Authoritative design for the whole platform: context, components, event contract, control-plane internals, reliability, security, operations, verification. | Anyone needing to understand how the system works |
 | [adr/](adr/) | One record per significant decision, in Context / Decision / Consequences form. | Anyone asking why something is the way it is |
+| [ai-engineering-practice.md](ai-engineering-practice.md) | How this platform was built with AI assistance, and the evidence for what caught the mistakes. | Anyone assessing the engineering process rather than the system |
 | [../README.md](../README.md) | How to run and use this service. | Operators and contributors |
 
 ## The split, and why it holds
