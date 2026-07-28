@@ -498,7 +498,7 @@ them. See [ADR 0001](adr/0001-keep-the-control-plane-domain-agnostic.md).
 |---|---|---|---|
 | `agentic-sdlc-control-plane` | 226 | 91% | 0 skipped in CI; gate durability runs against a real PostgreSQL service container |
 | `url-shortener-api` (tenant) | 35 | 92% | |
-| `agentic-sdlc-mlops` | 24 | 75% | |
+| `agentic-sdlc-mlops` | 29 | 79% | |
 | `agentic-sdlc-eventbus` | 8 | 100% | Contract package; enforced at 100% in CI |
 
 Remaining uncovered lines across the platform are concentrated in code requiring live

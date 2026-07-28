@@ -116,7 +116,8 @@ $PlatformTopics = @(
     'url-shortener.request-telemetry.v1',
     'mlops.drift-detected.v1',
     'control-plane.gate-decision.v1',
-    'control-plane.run-outcome.v1'
+    'control-plane.run-outcome.v1',
+    'control-plane.audit.v1'
 )
 
 # Stage table. Each service declares how to know it is actually ready, not merely started.

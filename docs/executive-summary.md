@@ -103,16 +103,19 @@ author expected. Running the real system proves the system works.** Both are rep
 
 | Evidence | Result |
 |---|---|
-| Automated tests | **275** across four repositories; 92% statement coverage in the control plane |
+| Automated tests | **298** across four repositories; 91% statement coverage in the control plane |
 | Continuous integration | Observed passing on all four repositories — a pipeline file is not treated as evidence |
 | A paused change resumed by a **different process** after the original was killed | Verified |
+| Work accepted from the message bus survives the process that accepted it | Verified — 12 unfinished items recovered after the container was killed mid-work |
+| Editing one record in the audit trail is detected | Verified — reported at the exact line |
+| Detection of a degradation drives a change end to end, across all four repositories | Verified against seeded history |
 | Cross-service message flow, in both directions, between containers | Verified |
 | A credential-less clone, and a clean failure when access is denied | Verified |
 | Built images carry no credential | Verified automatically on every build |
 
-**Ten of the platform's thirteen decision records document defects found only by running the real
-system**, every one of them while the automated tests were passing. That record — including why a
-test could not have caught each one — is in
+**Fifteen of the platform's nineteen decision records document defects found only by running the
+real system**, every one of them while the automated tests were passing. That record — including
+why a test could not have caught each one — is in
 [`ai-engineering-practice.md`](ai-engineering-practice.md), and is the clearest available evidence
 of how AI-generated mistakes were caught before they reached the final implementation.
 
@@ -148,6 +151,12 @@ Stated plainly, because a summary that omits limits is marketing.
 - **It runs changes one at a time.** Correct at current volume; parallel execution is a bounded,
   planned change.
 - **Single-broker messaging.** A development topology, not a resilient production cluster.
+- **The audit trail is tamper-*evident*, not tamper-proof.** Editing a record is detectable and a
+  second copy lives on the message bus, but both sinks sit inside the boundary the platform runs
+  in. Records that the platform cannot delete would mean write-once storage, which is not built.
+- **Delivery is at-least-once, not exactly-once.** A change that is interrupted at the wrong moment
+  can be presented twice; the second is recognised and ignored. Losing one was the alternative, and
+  this is the deliberate trade.
 
 ---
 
