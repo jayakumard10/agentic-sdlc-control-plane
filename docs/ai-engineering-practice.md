@@ -48,9 +48,9 @@ produced by running the thing, not by reasoning about it.
 
 ## 3. The measured result
 
-**Thirteen of the platform's sixteen ADRs document defects found only by running real
+**Fifteen of the platform's eighteen ADRs document defects found only by running real
 infrastructure, or by reading the code path an external reviewer pointed at.** The other three
-record design decisions. Every one of the thirteen shares a property: a green unit suite was
+record design decisions. Every one of the fifteen shares a property: a green unit suite was
 passing at the time, and no reasonable addition to it would have caught the defect.
 
 | ADR | Repository | Defect | Found by |
@@ -66,6 +66,8 @@ passing at the time, and no reasonable addition to it would have caught the defe
 | `0002` | mlops | Background drift thread died with a `TypeError` on every start; the container still reported healthy | Inspecting real container logs |
 | `0003` | mlops | `mem_limit` was a plausible round number, not a measurement; the container crash-looped on OOM | `docker stats` at increasing ceilings |
 | `0005` | mlops | MLflow answered every request from its only client with `403 Invalid Host header`; it had never once been reached | The first real tracking call ever made from the consumer |
+| `0006` | mlops | Every drift detection minted a random `correlation_id`, so an unresolved regression started a new governed change every 60s — and the control plane's deduplication, which depends on that id, never applied | Building the seeded end-to-end test for the seam between the two repos |
+| `0007` | mlops | Pattern subscription skipped every event published before it discovered a topic — `auto_offset_reset` was unset, so the client default positioned at the end and committed past the data | Comparing rows written against events published, after a wrong hypothesis was ruled out |
 | `0001` | eventbus | Cross-container traffic silently failed — bootstrap succeeded, then the client was told to reconnect to `localhost` | Container-to-container traffic, in both directions |
 | `0001` | url-shortener | `KafkaProducer` construction blocked every HTTP request indefinitely when the broker was down | Running the real stack with the broker deliberately stopped |
 
@@ -92,6 +94,8 @@ is the transferable part:
 | **The contract was tested; the call site was not** | `submit()` was written, documented, and tested to report a full queue. A passing test asserted it returned `False`. Nothing tested what the caller did with that answer — it discarded it and committed anyway. |
 | **The fixture shared an assumption with the code** | Every reconciliation test built a workspaces root containing only workspaces, so the suite encoded *this directory contains nothing else*. The shipped default put the audit trail there, and reconciliation deleted it on every restart. No test can catch an assumption it shares with the code. |
 | **A habit mistaken for a property** | The audit sink only ever appended, was documented as append-only, and was accurately described. None of that survived the question *"what stops this being edited?"* |
+| **A contract stated in prose, in the other repository** | The control plane documented that `correlation_id` was derived from the drift condition and built deduplication on it. mlops generated a random one. The shared envelope enforces that the field is a *string* and nothing more, so both repos were internally consistent and self-consistently wrong. |
+| **Every external signal agreed, and none of them measured the thing** | Consumer offsets advanced, lag was zero, logs were clean — and the telemetry had been skipped, not processed. A consumer that skips messages is indistinguishable from one that processed them, from the outside. Only comparing *rows written* against *events published* could tell. |
 
 Every one of these is invisible to a unit test *by construction*, not by oversight. That is the
 argument for the practice, and it is why coverage percentage is reported alongside functional
