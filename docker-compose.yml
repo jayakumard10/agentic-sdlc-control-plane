@@ -43,7 +43,9 @@ services:
       GIT_PAT_FILE: /run/secrets/github_pat
       WORKSPACES_ROOT: /workspaces
       FIXTURES_DIR: /fixtures
-      AUDIT_LOG_PATH: /workspaces/.audit/runs.jsonl
+      # Its own volume, not a subdirectory of /workspaces - reconciliation sweeps
+      # that root and deleted this on every restart. See docs/adr/0009.
+      AUDIT_LOG_PATH: /var/audit/runs.jsonl
       ORCHESTRATOR_MODE: replay
       PARKED_RUN_TTL_HOURS: "24"
       LOG_LEVEL: INFO
@@ -54,6 +56,10 @@ services:
     secrets: [postgres_password, github_pat]
     volumes:
       - workspaces:/workspaces
+      # Its own volume, not a subdirectory of /workspaces. Startup reconciliation
+      # deletes orphaned run workspaces under that root, and an audit trail living
+      # there was swept on every restart - see docs/adr/0009.
+      - audit:/var/audit
     mem_limit: 1g
     restart: unless-stopped
 
@@ -66,3 +72,4 @@ secrets:
 volumes:
   control-plane-postgres-data:
   workspaces:
+  audit:

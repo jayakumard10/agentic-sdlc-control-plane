@@ -48,10 +48,10 @@ produced by running the thing, not by reasoning about it.
 
 ## 3. The measured result
 
-**Eleven of the platform's fourteen ADRs document defects found only by running real
+**Thirteen of the platform's sixteen ADRs document defects found only by running real
 infrastructure, or by reading the code path an external reviewer pointed at.** The other three
-record design decisions. Every one of the eleven shares a property: a green unit suite was passing
-at the time, and no reasonable addition to it would have caught the defect.
+record design decisions. Every one of the thirteen shares a property: a green unit suite was
+passing at the time, and no reasonable addition to it would have caught the defect.
 
 | ADR | Repository | Defect | Found by |
 |---|---|---|---|
@@ -60,6 +60,8 @@ at the time, and no reasonable addition to it would have caught the defect.
 | [0004](adr/0004-the-poll-loop-tolerates-transient-client-errors.md) | control-plane | One bad file descriptor inside the Kafka client's selector terminated the whole service | A real run left running long enough to hit it |
 | [0006](adr/0006-configure-the-committer-identity-on-a-cloned-workspace.md) | control-plane | No run could reach `completed` in the container — `Author identity unknown` at the release gate | Running in the container, which has no ambient git identity |
 | [0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md) | control-plane | A full work queue dropped the trigger *and* committed past it — no run, no redelivery, no outcome event | An external reviewer pointing at the line; the loss path was worse than the one already documented |
+| [0008](adr/0008-the-audit-trail-must-be-checkable-not-merely-appended.md) | control-plane | The audit trail was "append-only by convention" — editable by anything holding the volume, with no way to tell | An external reviewer asking what stopped it being edited |
+| [0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md) | control-plane | Startup reconciliation deleted the audit trail on **every restart** — it defaulted to a path inside the workspaces root it sweeps | Restarting the real container while verifying ADR 0008 |
 | `0001` | mlops | DuckDB rejects a second connection to the same file from the same process, contradicting the design assumption | The real container against a live broker |
 | `0002` | mlops | Background drift thread died with a `TypeError` on every start; the container still reported healthy | Inspecting real container logs |
 | `0003` | mlops | `mem_limit` was a plausible round number, not a measurement; the container crash-looped on OOM | `docker stats` at increasing ceilings |
@@ -88,6 +90,8 @@ is the transferable part:
 | **A resource limit was guessed** | `mem_limit` was a round number rather than a measurement. |
 | **Only long-running execution reached it** | A socket lifecycle error inside the client's event loop. |
 | **The contract was tested; the call site was not** | `submit()` was written, documented, and tested to report a full queue. A passing test asserted it returned `False`. Nothing tested what the caller did with that answer — it discarded it and committed anyway. |
+| **The fixture shared an assumption with the code** | Every reconciliation test built a workspaces root containing only workspaces, so the suite encoded *this directory contains nothing else*. The shipped default put the audit trail there, and reconciliation deleted it on every restart. No test can catch an assumption it shares with the code. |
+| **A habit mistaken for a property** | The audit sink only ever appended, was documented as append-only, and was accurately described. None of that survived the question *"what stops this being edited?"* |
 
 Every one of these is invisible to a unit test *by construction*, not by oversight. That is the
 argument for the practice, and it is why coverage percentage is reported alongside functional

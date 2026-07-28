@@ -28,6 +28,8 @@ reasoning where nobody looks for it. An ADR is a stable address for a decision.
 | [0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md) | Single-threaded worker; offset commit timing |
 | [0006](adr/0006-configure-the-committer-identity-on-a-cloned-workspace.md) | Committer identity on a cloned workspace |
 | [0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md) | A full work queue is backpressure, not loss |
+| [0008](adr/0008-the-audit-trail-must-be-checkable-not-merely-appended.md) | The audit trail must be checkable, not merely appended |
+| [0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md) | The audit trail does not live in the workspaces root |
 
 New ADRs are numbered sequentially and never edited once merged. A decision that is later reversed
 gets a new ADR that supersedes the old one, so the reasoning at the time stays legible.

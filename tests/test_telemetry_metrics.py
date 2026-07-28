@@ -5,12 +5,19 @@ metrics computed from the audit trail).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agentic_control_plane.metrics import compute_metrics, summarize_run
 from agentic_control_plane.state import AuditEvent, GraphState
-from agentic_control_plane.telemetry import TelemetrySink, render_console_line, render_console_trace
+from agentic_control_plane.telemetry import (
+    TelemetrySink,
+    _record_digest,
+    render_console_line,
+    render_console_trace,
+    verify_chain,
+)
 
 
 def test_telemetry_sink_flushes_only_new_events(tmp_path: Path):
@@ -28,6 +35,144 @@ def test_telemetry_sink_flushes_only_new_events(tmp_path: Path):
 
     # no new events since the last flush -> nothing written, nothing rendered
     assert sink.flush_new_events(events2) == []
+
+
+def _write_events(path: Path, count: int) -> TelemetrySink:
+    sink = TelemetrySink(path)
+    sink.flush_new_events(
+        [AuditEvent(node=f"n{i}", event_type="node_end", detail=f"detail {i}") for i in range(count)]
+    )
+    return sink
+
+
+def _lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").strip().splitlines()
+
+
+def test_a_clean_audit_log_verifies(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    _write_events(path, 5)
+
+    result = verify_chain(path)
+
+    assert result.ok
+    assert result.records_checked == 5
+
+
+def test_a_missing_audit_log_verifies_as_an_empty_chain(tmp_path: Path):
+    """Nothing written yet is a different condition from something was tampered with."""
+    result = verify_chain(tmp_path / "never-written.jsonl")
+
+    assert result.ok
+    assert result.records_checked == 0
+
+
+def test_editing_a_record_is_detected(tmp_path: Path):
+    """The property the chain exists for. Before this, the audit trail was plain
+
+    appended JSONL on a writable volume: a gate decision could be edited after the
+    fact - who approved it, or whether it was approved at all - and nothing anywhere
+    could tell. For a platform whose claim is governed, auditable change, that is the
+    load-bearing record.
+    """
+    path = tmp_path / "events.jsonl"
+    _write_events(path, 4)
+
+    lines = _lines(path)
+    tampered = json.loads(lines[1])
+    tampered["event"]["decision"] = "approved"  # a rejection quietly becomes an approval
+    lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = verify_chain(path)
+
+    assert not result.ok
+    assert result.broken_at_line == 2
+    assert "digest" in result.reason
+
+
+def test_recomputing_the_digest_of_an_edited_record_is_still_detected(tmp_path: Path):
+    """Editing a record and fixing up its own hash does not make the edit consistent:
+
+    the next record still carries the digest of what came before, and that is what
+    fails. Defeating the chain means rewriting every record after the edit, which is
+    the limitation ADR 0008 names rather than hides.
+    """
+    path = tmp_path / "events.jsonl"
+    _write_events(path, 4)
+
+    lines = _lines(path)
+    tampered = json.loads(lines[1])
+    tampered["event"]["detail"] = "something else entirely"
+    tampered["hash"] = _record_digest(
+        tampered["seq"], tampered["prev_hash"], tampered["event"]
+    )
+    lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = verify_chain(path)
+
+    assert not result.ok
+    assert result.broken_at_line == 3, "the break surfaces at the record after the edit"
+    assert "prev_hash" in result.reason
+
+
+def test_removing_a_record_from_the_middle_is_detected(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    _write_events(path, 5)
+
+    lines = _lines(path)
+    del lines[2]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = verify_chain(path)
+
+    assert not result.ok
+    assert result.broken_at_line == 3
+
+
+def test_truncating_the_tail_is_not_detected_by_the_chain_alone(tmp_path: Path):
+    """A limitation, asserted so it stays a known one.
+
+    Each record proves only that it follows its predecessor; nothing in the file says
+    how long the file should be. Dropping records off the end therefore leaves a
+    shorter chain that still verifies. Detecting that needs an anchor outside the file
+    - the Kafka copy of the same events - and this test exists so the gap is visible in
+    the suite rather than discovered later by someone assuming otherwise.
+    """
+    path = tmp_path / "events.jsonl"
+    _write_events(path, 5)
+
+    lines = _lines(path)
+    path.write_text("\n".join(lines[:3]) + "\n", encoding="utf-8")
+
+    result = verify_chain(path)
+
+    assert result.ok, "the chain cannot see what is no longer there"
+    assert result.records_checked == 3
+
+
+def test_a_restart_extends_the_existing_chain(tmp_path: Path):
+    """A new sink over an existing file must continue the chain, not start a new one.
+
+    Restarts are ordinary - the container is restartable by design and a parked run can
+    be resumed by a different process. If each restart began again at genesis, every
+    audit log would be a series of disconnected segments and verification would report
+    a break for something that never happened.
+    """
+    path = tmp_path / "events.jsonl"
+    _write_events(path, 3)
+
+    second_sink = TelemetrySink(path)
+    second_sink.flush_new_events(
+        [AuditEvent(node="after-restart", event_type="node_start", detail="resumed")]
+    )
+
+    result = verify_chain(path)
+
+    assert result.ok
+    assert result.records_checked == 4
+    assert [json.loads(line)["seq"] for line in _lines(path)] == [0, 1, 2, 3]
 
 
 def test_render_console_line_includes_decision_and_latency():

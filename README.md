@@ -191,7 +191,7 @@ Configuration:
 | `ORCHESTRATOR_MODE` | `replay` | `live` requires a `claude` CLI this image does not install |
 | `PARKED_RUN_TTL_HOURS` | `24` | After this, a parked run is reported `stale` and cleaned up |
 | `REPLANNING_CONFLICT_MARKERS` | *(empty)* | Comma-separated module names that count as an existing-functionality conflict |
-| `AUDIT_LOG_PATH` | `/workspaces/.audit/runs.jsonl` | Append-only audit trail of every node execution and gate decision |
+| `AUDIT_LOG_PATH` | `/var/audit/runs.jsonl` | Hash-chained audit trail of every node execution and gate decision. Verify with `verify_chain`. |
 
 ### Code generation modes
 
@@ -212,7 +212,7 @@ defined terminal state with outcome telemetry. See `docs/adr/0001`.
 pytest --cov=agentic_control_plane --cov-report=term-missing
 ```
 
-210 tests, 92% statement coverage. The durability tests need a reachable Postgres and skip without
+220 tests, 92% statement coverage. The durability tests need a reachable Postgres and skip without
 one; run them against the compose Postgres:
 
 ```bash

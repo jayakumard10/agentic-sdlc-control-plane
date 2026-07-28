@@ -18,6 +18,7 @@ import pytest
 
 from agentic_control_plane import consumer, events, runner, tools, workspace
 from agentic_control_plane.checkpointer import build_memory_checkpointer
+from agentic_control_plane.telemetry import TelemetrySink, verify_chain
 
 
 def _envelope(
@@ -538,6 +539,60 @@ def test_worker_clones_and_parks_at_the_first_gate(
     assert runner.is_resumable("run-w1", checkpointer) is True
     assert workspace.workspace_for("run-w1").exists()
     assert outcomes == [], "a parked run has no outcome yet"
+
+
+def test_audit_events_reach_both_the_file_and_the_topic(
+    worker_env: Path, origin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Two independent copies, because they fail differently.
+
+    The file is complete but writable by whoever holds the volume; the topic is out of
+    that writer's reach but only as durable as the broker's retention. A tamper-evident
+    file that only ever existed on the tampered machine is not independent evidence.
+    """
+    _published(monkeypatch)
+    audited: list = []
+    monkeypatch.setattr(events, "publish_audit_event", audited.append)
+
+    audit_path = tmp_path / "audit" / "runs.jsonl"
+    worker = consumer.Worker(build_memory_checkpointer(), audit_sink=TelemetrySink(audit_path))
+
+    worker.handle_trigger(
+        consumer.TriggerWork("run-audited", "brownfield", str(origin), "main", "fix it")
+    )
+
+    assert audited, "audit events must reach the topic, not only the local file"
+    assert {e.correlation_id for e in audited} == {"run-audited"}
+    assert {e.event_type for e in audited} == {"audit"}
+    assert all(e.git_target.repo_url == str(origin) for e in audited)
+
+    chain = verify_chain(audit_path)
+    assert chain.ok and chain.records_checked == len(audited), (
+        "the file and the topic must carry the same records"
+    )
+
+
+def test_a_broker_outage_does_not_fail_a_run_or_lose_the_local_audit(
+    worker_env: Path, origin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The topic is the second copy, not a dependency of the run."""
+    _published(monkeypatch)
+    monkeypatch.setattr(
+        events,
+        "publish_audit_event",
+        lambda _e: (_ for _ in ()).throw(RuntimeError("broker unreachable")),
+    )
+
+    audit_path = tmp_path / "audit" / "runs.jsonl"
+    worker = consumer.Worker(build_memory_checkpointer(), audit_sink=TelemetrySink(audit_path))
+
+    worker.handle_trigger(
+        consumer.TriggerWork("run-nobroker", "brownfield", str(origin), "main", "fix it")
+    )
+
+    assert workspace.workspace_for("run-nobroker").exists(), "the run proceeded"
+    chain = verify_chain(audit_path)
+    assert chain.ok and chain.records_checked > 0, "the local audit trail survived intact"
 
 
 def test_worker_treats_a_redelivered_trigger_as_a_noop(

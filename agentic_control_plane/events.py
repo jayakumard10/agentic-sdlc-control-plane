@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 SERVICE_NAME = "agentic-sdlc-control-plane"
 RUN_OUTCOME_TOPIC = "control-plane.run-outcome.v1"
 GATE_DECISION_TOPIC = "control-plane.gate-decision.v1"
+AUDIT_TOPIC = "control-plane.audit.v1"
 DLQ_TOPIC = "control-plane.dlq.v1"
 
 _PRODUCER_INIT_JOIN_TIMEOUT_S = 1.0
@@ -125,6 +126,56 @@ def publish_run_outcome(envelope: EventEnvelope) -> None:
     try:
         future = producer.send(
             RUN_OUTCOME_TOPIC,
+            key=envelope.correlation_id,
+            value=envelope.model_dump_json(),
+        )
+        future.add_errback(_on_send_error)
+    except Exception as exc:  # pragma: no cover - defensive, mirrors add_errback path
+        _on_send_error(exc)
+
+
+def build_audit_event(
+    *,
+    run_id: str,
+    scenario_type: str,
+    repo_url: str,
+    branch: str,
+    commit_sha: str | None,
+    event: dict,
+) -> EventEnvelope:
+    """One audit record, in the platform's own envelope.
+
+    The record travels as `payload` so the envelope stays exactly the shape every
+    other topic uses, rather than inventing a second contract for the one stream an
+    auditor is most likely to read.
+    """
+    return EventEnvelope(
+        event_id=uuid4(),
+        correlation_id=run_id,
+        service=SERVICE_NAME,
+        event_type="audit",
+        timestamp=datetime.now(timezone.utc),
+        producer=Producer(service=SERVICE_NAME, instance_id=_instance_id),
+        git_target=GitTarget(repo_url=repo_url, branch=branch, commit_sha=commit_sha),
+        scenario_type=scenario_type,
+        metrics={},
+        payload=event,
+    )
+
+
+def publish_audit_event(envelope: EventEnvelope) -> None:
+    """Publish one audit record, keyed by run_id so a run's records stay ordered.
+
+    Best-effort, like every other publish here: a broker outage must not fail a run.
+    The file sink is the primary record and this is the independent second copy, so
+    losing one of the two degrades the guarantee rather than the run.
+    """
+    producer = _get_producer()
+    if producer is None:
+        return
+    try:
+        future = producer.send(
+            AUDIT_TOPIC,
             key=envelope.correlation_id,
             value=envelope.model_dump_json(),
         )

@@ -189,10 +189,21 @@ def cleanup(run_id: str) -> None:
 
 
 def existing_run_ids() -> list[str]:
+    """Run workspaces under the root, ignoring anything that is not one.
+
+    Dot-directories are skipped. Reconciliation deletes whatever this returns that no
+    longer has a resumable run, so anything else sharing the root would be destroyed -
+    which is exactly what happened to the audit trail when it defaulted to
+    `/workspaces/.audit`. The audit log has since moved out of this root entirely
+    (docs/adr/0009); this filter is the second half of that fix, so the next thing to
+    appear alongside a workspace is not silently swept.
+    """
     root = workspaces_root()
     if not root.is_dir():
         return []
-    return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
+    return sorted(
+        entry.name for entry in root.iterdir() if entry.is_dir() and not entry.name.startswith(".")
+    )
 
 
 def reconcile(is_resumable: Callable[[str], bool]) -> list[str]:

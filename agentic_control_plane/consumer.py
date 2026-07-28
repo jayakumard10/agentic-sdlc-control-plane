@@ -51,7 +51,7 @@ from agentic_events import EventEnvelope
 
 from agentic_control_plane import events, runner, workspace
 from agentic_control_plane.state import GraphState
-from agentic_control_plane.telemetry import TelemetrySink
+from agentic_control_plane.telemetry import TelemetrySink, render_console_line
 
 logger = logging.getLogger(__name__)
 
@@ -393,11 +393,18 @@ class Worker:
         workspace.cleanup(run_id)
 
     def _record_audit(self, result: runner.RunResult) -> None:
-        """Append this slice's audit events to the JSONL sink.
+        """Record this slice's audit events to both durable sinks.
 
         The same AuditEvent list the graph already threads through state, projected
-        to a durable file - including the gate payload of a parked run, which is how
-        a reviewer sees what they are being asked to approve.
+        to a hash-chained file - including the gate payload of a parked run, which is
+        how a reviewer sees what they are being asked to approve - and published to
+        the audit topic.
+
+        Two sinks because they fail differently. The file is local and complete but
+        writable by whoever holds the volume; the topic is out of reach of that
+        writer but only as durable as the broker's retention. Neither is sufficient
+        evidence alone, and the pair disagreeing is itself worth knowing. See
+        docs/adr/0008.
         """
         if self.audit_sink is None:
             return
@@ -405,10 +412,41 @@ class Worker:
         if not state_events:
             return
         try:
-            for line in self.audit_sink.flush_new_events(state_events):
-                logger.info("audit %s", line)
+            new_events = self.audit_sink.flush_new_events(state_events)
         except Exception:
             logger.exception("failed to write audit events; continuing")
+            return
+        for event in new_events:
+            logger.info("audit %s", render_console_line(event))
+        self._publish_audit(result.run_id, new_events)
+
+    def _publish_audit(self, run_id: str, new_events: list) -> None:
+        """Publish audit records to the topic, best-effort.
+
+        A run whose broker is unreachable still completes and still has its local
+        audit file; what is lost is the independent copy, which is a degraded
+        guarantee rather than a failed run.
+        """
+        target = self._targets.get(run_id)
+        if target is None:
+            # A slice with no target on record - a decision for a run this process did
+            # not start. The file sink still has the events; only the topic copy needs
+            # the git context the envelope requires.
+            return
+        for event in new_events:
+            try:
+                events.publish_audit_event(
+                    events.build_audit_event(
+                        run_id=run_id,
+                        scenario_type=target.scenario_type,
+                        repo_url=target.repo_url,
+                        branch=target.branch,
+                        commit_sha=target.commit_sha_before,
+                        event=json.loads(event.model_dump_json()),
+                    )
+                )
+            except Exception:
+                logger.exception("failed to publish an audit event; continuing")
 
     def _publish_outcome(self, run_id: str, terminal_state: str, detail: str) -> None:
         """Read the target from the run's record rather than taking it as arguments.

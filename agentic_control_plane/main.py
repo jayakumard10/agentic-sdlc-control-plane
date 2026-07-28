@@ -35,7 +35,13 @@ SHUTDOWN_DRAIN_SECONDS = 30
 
 
 def audit_log_path() -> Path:
-    return Path(os.environ.get("AUDIT_LOG_PATH", "/workspaces/.audit/runs.jsonl"))
+    """Outside the workspaces root, deliberately - see docs/adr/0009.
+
+    The default used to be `/workspaces/.audit/runs.jsonl`, which put the audit trail
+    inside the directory startup reconciliation sweeps for orphaned run workspaces. It
+    was deleted on every restart.
+    """
+    return Path(os.environ.get("AUDIT_LOG_PATH", "/var/audit/runs.jsonl"))
 
 
 def _run_sweep_loop(worker: consumer.Worker, stop_event: threading.Event) -> None:

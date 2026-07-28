@@ -236,6 +236,32 @@ def test_reconcile_keeps_a_workspace_it_cannot_make_a_decision_about(
     assert (workspaces / "unknown-run").exists()
 
 
+def test_reconcile_does_not_delete_an_audit_trail_sharing_the_root(
+    origin_repo: Path, workspaces: Path
+):
+    """Regression, found by restarting the real container.
+
+    `AUDIT_LOG_PATH` defaulted to `/workspaces/.audit/runs.jsonl` - inside the root
+    reconciliation sweeps. On every startup `.audit` was enumerated as a run,
+    `is_resumable(".audit")` correctly said no, and the audit trail was deleted. The
+    log read `Reconciling orphaned workspace for run .audit`, which is the system
+    describing exactly what it was doing to the record of what it had done.
+
+    The audit log has since moved to its own volume outside this root; this asserts
+    the second half of the fix, so anything else that ends up alongside a workspace is
+    not swept the same way.
+    """
+    workspace.clone_for_run("real-run", str(origin_repo), "main")
+    audit_dir = workspaces / ".audit"
+    audit_dir.mkdir()
+    (audit_dir / "runs.jsonl").write_text('{"seq":0}\n', encoding="utf-8")
+
+    removed = workspace.reconcile(lambda _run_id: False)
+
+    assert removed == ["real-run"], "an orphaned run workspace is still reclaimed"
+    assert (audit_dir / "runs.jsonl").exists(), "the audit trail is not a workspace"
+
+
 def test_reconcile_is_a_noop_when_the_root_does_not_exist(workspaces: Path):
     assert workspace.existing_run_ids() == []
     assert workspace.reconcile(lambda _run_id: False) == []

@@ -1,6 +1,6 @@
 # Agentic SDLC Platform — System Design
 
-**Status:** Current · **Last verified:** 2026-07-27 · **Owner:** Platform engineering
+**Status:** Current · **Last verified:** 2026-07-28 · **Owner:** Platform engineering
 
 This is the authoritative design document for the `agentic-sdlc-*` platform. It describes the
 system as built and verified, not as proposed. Content is stated as fact only where it has been
@@ -174,6 +174,7 @@ and adding a segment later is a topic rename, not a contract change.
 | `mlops.drift-detected.v1` | `agentic-sdlc-mlops` | `control-plane-triggers` | service name | A service's drift events stay mutually ordered |
 | `control-plane.gate-decision.v1` | Gate reviewer | `control-plane-decisions` | `thread_id` (== `run_id`) | **Correctness-critical.** A later decision can never be processed before an earlier one for the same parked run. |
 | `control-plane.run-outcome.v1` | `agentic-sdlc-control-plane` | *(open)* | `run_id` | A run's outcomes stay ordered |
+| `control-plane.audit.v1` | `agentic-sdlc-control-plane` | *(open)* | `run_id` | A run's audit records stay ordered. The independent copy of the audit trail — see [§10.3](#103-observability-and-audit). |
 | `{service}.dlq.v1` | Any | *(manual)* | source topic | — |
 
 ### 5.2 Compatibility policy
@@ -437,7 +438,7 @@ Control plane, by environment variable:
 | `ORCHESTRATOR_MODE` | `replay` | `live` requires a CLI the image does not install |
 | `PARKED_RUN_TTL_HOURS` | `24` | Parked-run expiry |
 | `REPLANNING_CONFLICT_MARKERS` | *(empty)* | Module names counting as an existing-functionality conflict |
-| `AUDIT_LOG_PATH` | `/workspaces/.audit/runs.jsonl` | Audit trail location |
+| `AUDIT_LOG_PATH` | `/var/audit/runs.jsonl` | Hash-chained audit trail. Outside the workspaces root deliberately — see ADR 0009. |
 
 ### 10.3 Observability and audit
 
@@ -445,13 +446,28 @@ Two deliberately separate streams:
 
 - **Operational logging** — levelled application logs for diagnosis: what a subprocess returned,
   whether a git operation succeeded, why a checkpointer was selected.
-- **Audit trail** — an append-only JSONL stream of `AuditEvent` records, one per node execution,
-  gate decision, retry, fallback, rollback, safe-stop, and guardrail violation. Each carries a
-  timestamp, node, event type, detail, decision, and latency. This is the record of *what the
-  system decided and on whose authority*, including the reviewer identity behind each gate.
+- **Audit trail** — a stream of `AuditEvent` records, one per node execution, gate decision, retry,
+  fallback, rollback, safe-stop, and guardrail violation. Each carries a timestamp, node, event
+  type, detail, decision, and latency. This is the record of *what the system decided and on whose
+  authority*, including the reviewer identity behind each gate.
 
 Reliability metrics — success rate, retry frequency, rollback frequency, MTTR, end-to-end latency —
 are derived from the audit trail rather than collected separately, so there is one source of truth.
+
+#### Audit integrity
+
+The audit trail is written to two sinks that fail differently, and is checkable rather than merely
+appended — see [ADR 0008](adr/0008-the-audit-trail-must-be-checkable-not-merely-appended.md).
+
+| Sink | Property | Weakness it does not cover |
+|---|---|---|
+| Hash-chained JSONL file | Each record carries the SHA-256 of its predecessor. `verify_chain` reports the first record that does not hold, by line and reason. | Writable by whoever holds the volume. Truncation of the tail leaves a shorter chain that still verifies. |
+| `control-plane.audit.v1` | An independent copy, out of reach of that writer. Comparison against it is what catches truncation. | Retention is the broker's default until explicit topic provisioning lands ([§12](#12-roadmap)). |
+
+Neither is WORM storage. Both sinks sit inside the trust boundary the platform runs in, so the
+claim is *tampering is detectable*, not *tampering is impossible*. Regulatory-grade retention means
+shipping these records somewhere the platform cannot delete its own history — object-lock storage
+or a SIEM — which is not built.
 
 ### 10.4 Code generation availability
 
@@ -474,7 +490,7 @@ them. See [ADR 0001](adr/0001-keep-the-control-plane-domain-agnostic.md).
 
 | Repository | Tests | Coverage | Notes |
 |---|---|---|---|
-| `agentic-sdlc-control-plane` | 210 | 92% | 0 skipped in CI; gate durability runs against a real PostgreSQL service container |
+| `agentic-sdlc-control-plane` | 220 | 92% | 0 skipped in CI; gate durability runs against a real PostgreSQL service container |
 | `url-shortener-api` (tenant) | 35 | 92% | |
 | `agentic-sdlc-mlops` | 24 | 75% | |
 | `agentic-sdlc-eventbus` | 8 | 100% | Contract package; enforced at 100% in CI |
@@ -506,6 +522,10 @@ the position the calling component actually occupies:
 | Full run to `completed` in-container | Pass — committed in the workspace, outcome published, workspace removed |
 | **Parked run resumed by a different process after the original was killed** | Pass — the durability property P4 depends on, demonstrated rather than argued |
 | Startup reconciliation removes orphaned workspaces | Pass |
+| Startup reconciliation **leaves the audit trail alone** | Pass — previously deleted it on every restart ([ADR 0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md)) |
+| Audit chain written by the container verifies end to end | Pass — `verify_chain` ok over the real file |
+| Editing one record in the real audit file is detected | Pass — reported at the exact line, *"record contents do not match its own digest"* |
+| Audit records reach `control-plane.audit.v1` | Pass — consumed back off the topic, carrying the run's `correlation_id` and clone commit |
 | Built image carries no credential | Pass — `/root/.gitconfig` is 0 bytes |
 
 ### 11.3 Domain agnosticism
@@ -541,3 +561,5 @@ existed.
 | [0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md) | Single-threaded worker; offset commit timing |
 | [0006](adr/0006-configure-the-committer-identity-on-a-cloned-workspace.md) | Committer identity on a cloned workspace |
 | [0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md) | A full work queue is backpressure, not loss |
+| [0008](adr/0008-the-audit-trail-must-be-checkable-not-merely-appended.md) | The audit trail must be checkable, not merely appended |
+| [0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md) | The audit trail does not live in the workspaces root |
