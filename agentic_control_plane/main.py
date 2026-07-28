@@ -23,8 +23,8 @@ import threading
 import time
 from pathlib import Path
 
-from agentic_control_plane import consumer, events, runner, workspace
-from agentic_control_plane.checkpointer import build_postgres_checkpointer
+from agentic_control_plane import consumer, events, inbox, runner, workspace
+from agentic_control_plane.checkpointer import _postgres_conn_string, build_postgres_checkpointer
 from agentic_control_plane.logging_config import configure_logging
 from agentic_control_plane.telemetry import TelemetrySink
 
@@ -86,7 +86,15 @@ def main() -> None:
     with build_postgres_checkpointer() as checkpointer:
         _reconcile_workspaces(checkpointer)
 
-        worker = consumer.Worker(checkpointer, audit_sink=TelemetrySink(audit_log_path()))
+        work_inbox = inbox.Inbox(_postgres_conn_string())
+        work_inbox.setup()
+
+        worker = consumer.Worker(
+            checkpointer, audit_sink=TelemetrySink(audit_log_path()), inbox=work_inbox
+        )
+        # Before the poll loops start, so work the previous process accepted and did
+        # not finish is handled ahead of anything newly consumed.
+        worker.restore_pending()
 
         threads = [
             threading.Thread(

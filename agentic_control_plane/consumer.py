@@ -50,6 +50,7 @@ from datetime import datetime, timezone
 from agentic_events import EventEnvelope
 
 from agentic_control_plane import events, runner, workspace
+from agentic_control_plane.inbox import payload_of
 from agentic_control_plane.state import GraphState
 from agentic_control_plane.telemetry import TelemetrySink, render_console_line
 
@@ -87,12 +88,23 @@ class TriggerWork:
     repo_url: str
     branch: str
     requirement: str
+    # Row id in the durable inbox, set when the work is recorded and used to forget it
+    # once finished. None when no inbox is configured, as in tests.
+    inbox_id: int | None = None
 
 
 @dataclass
 class DecisionWork:
     run_id: str
     decision: dict
+    inbox_id: int | None = None
+
+
+_WORK_KINDS = {"trigger": TriggerWork, "decision": DecisionWork}
+
+
+def _kind_of(work) -> str:
+    return "trigger" if isinstance(work, TriggerWork) else "decision"
 
 
 @dataclass
@@ -259,32 +271,99 @@ class Worker:
     length of a human's attention span is ever observable from a poll loop.
     """
 
-    def __init__(self, checkpointer, audit_sink: TelemetrySink | None = None) -> None:
+    def __init__(self, checkpointer, audit_sink: TelemetrySink | None = None, inbox=None) -> None:
         self.checkpointer = checkpointer
         self.audit_sink = audit_sink
+        # Optional so tests can run without Postgres. The running control plane always
+        # has one - without it, a crash with items queued loses them (ADR 0010).
+        self.inbox = inbox
         self.queue: queue.Queue = queue.Queue(maxsize=WORK_QUEUE_MAXSIZE)
         # Enough to publish an outcome for a run whose workspace is already gone:
         # repo, branch, scenario_type, and the commit the clone started from.
         self._targets: dict[str, _RunTarget] = {}
 
     def submit(self, work) -> bool:
-        """Enqueue work without blocking. False if the queue is full.
+        """Record the work durably, then enqueue it. False if it cannot be accepted.
 
         A False here is backpressure, not loss: the caller must leave the offset
         uncommitted and rewind, so the message is redelivered once the worker has
         drained. See `poll_loop`.
+
+        Recording comes first so there is no moment where the work is queued but not
+        durable. A failure to record is also a refusal - accepting work this process
+        could not write down, and then committing the offset for it, is the exact loss
+        this exists to prevent.
         """
+        if self.inbox is not None:
+            try:
+                work.inbox_id = self.inbox.record(
+                    _kind_of(work), work.run_id, payload_of(work)
+                )
+            except Exception:
+                logger.exception(
+                    "could not record %s durably; refusing it so Kafka redelivers",
+                    work.run_id,
+                )
+                return False
         try:
             self.queue.put_nowait(work)
             return True
         except queue.Full:
+            # Recorded but not queued, so forget it again - it is about to be
+            # redelivered, and leaving the row would replay it a second time at startup.
+            self._forget(work)
             logger.warning(
                 "work queue is full (%d items); applying backpressure rather than "
                 "accepting %r",
                 self.queue.qsize(),
-                work,
+                work.run_id,
             )
             return False
+
+    def _forget(self, work) -> None:
+        if self.inbox is not None and getattr(work, "inbox_id", None) is not None:
+            self.inbox.discard(work.inbox_id)
+            work.inbox_id = None
+
+    def restore_pending(self) -> int:
+        """Put back work the previous process accepted but did not finish.
+
+        Called once at startup, before the poll loops begin, so recovered work is
+        handled ahead of anything newly consumed - the order it was accepted in.
+        """
+        if self.inbox is None:
+            return 0
+        restored = 0
+        for row_id, kind, payload in self.inbox.pending():
+            work_class = _WORK_KINDS.get(kind)
+            if work_class is None:  # pragma: no cover - defensive
+                logger.error("unknown work kind %r in inbox row %s; dropping", kind, row_id)
+                self.inbox.discard(row_id)
+                continue
+            try:
+                work = work_class(**payload, inbox_id=row_id)
+            except TypeError:
+                logger.exception(
+                    "inbox row %s does not match %s; dropping", row_id, work_class.__name__
+                )
+                self.inbox.discard(row_id)
+                continue
+            try:
+                self.queue.put_nowait(work)
+            except queue.Full:
+                # More unfinished work than the queue holds. The rest stays in the
+                # inbox and is restored on a later start rather than being dropped.
+                logger.warning(
+                    "queue full while restoring; %d item(s) remain in the inbox",
+                    self.inbox.depth() - restored,
+                )
+                break
+            restored += 1
+        if restored:
+            logger.warning("Restored %d unfinished work item(s) from the inbox", restored)
+        else:
+            logger.info("No unfinished work to restore")
+        return restored
 
     def has_capacity(self) -> bool:
         """True once the queue has drained enough to resume fetching."""
@@ -485,6 +564,10 @@ class Worker:
             except Exception:
                 logger.exception("work item failed; continuing with the next")
             finally:
+                # Forget it either way. A failed run has already been reported as
+                # terminal (ADR 0003), so replaying it at the next startup would
+                # publish a second outcome for a run that has one.
+                self._forget(work)
                 self.queue.task_done()
 
 

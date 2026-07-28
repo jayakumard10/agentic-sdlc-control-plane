@@ -1,6 +1,6 @@
 # AI-Assisted Engineering Practice
 
-**Status:** Current · **Last verified:** 2026-07-27 · **Scope:** all four platform repositories
+**Status:** Current · **Last verified:** 2026-07-28 · **Scope:** all four platform repositories
 
 This platform was built with AI assistance throughout. That is worth stating plainly, and it
 raises an obvious question: *what stopped AI-generated mistakes from reaching the final
@@ -20,7 +20,7 @@ Three roles, applied per repository, recorded in each repository's `CLAUDE.md`:
 | Role | What it produced | Where it lives |
 |---|---|---|
 | **Design** | Architecture, boundaries, event contract, diagrams | [`system-design.md`](system-design.md), [`adr/`](adr/) |
-| **Development** | Implementation, error handling, logging, audit sink, commit history | Source, plus 59 commits across four repositories |
+| **Development** | Implementation, error handling, logging, audit sink, commit history | Source, plus 67 commits across four repositories |
 | **QA** | Unit tests with coverage, and functional verification for anything a unit test cannot reach | Test suites, plus [§11](system-design.md#11-verification) of the design doc |
 
 The division that matters is the third one: **unit tests and functional verification are treated as
@@ -48,8 +48,8 @@ produced by running the thing, not by reasoning about it.
 
 ## 3. The measured result
 
-**Fifteen of the platform's eighteen ADRs document defects found only by running real
-infrastructure, or by reading the code path an external reviewer pointed at.** The other three
+**Fifteen of the platform's nineteen ADRs document defects found only by running real
+infrastructure, or by reading the code path an external reviewer pointed at.** The other four
 record design decisions. Every one of the fifteen shares a property: a green unit suite was
 passing at the time, and no reasonable addition to it would have caught the defect.
 
@@ -77,7 +77,7 @@ and CI had never passed on two repositories because a required secret was unset.
 
 ### Why the test suite could not have caught these
 
-The nine are not nine instances of one mistake. They fall into distinct classes, and the taxonomy
+They are not fifteen instances of one mistake. They fall into distinct classes, and the taxonomy
 is the transferable part:
 
 | Class | Example |

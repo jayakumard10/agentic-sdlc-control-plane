@@ -155,7 +155,7 @@ Stated plainly, because a summary that omits limits is marketing.
 
 | Priority | Item |
 |---|---|
-| Near term | Durable hand-off of queued work; tamper-evident, centrally retained audit records |
+| Done since the last review | Durable hand-off of queued work; tamper-evident, centrally retained audit records |
 | Near term | An automated end-to-end test driving detection through to recorded outcome |
 | Later | A real model lifecycle — trained, versioned, monitored — replacing threshold comparison |
 | Later | Parallel run execution; explicit topic provisioning; multi-tenancy |

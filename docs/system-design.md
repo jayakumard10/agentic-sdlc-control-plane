@@ -226,9 +226,15 @@ Two independent read paths and one worker. The separation is the load-bearing de
   a checkpointer connection never becomes a question that has to be answered by testing. Runs
   execute serially, which is correct at this platform's volume.
 
-Offsets commit on enqueue rather than on completion. The trade-off, and the bounded loss window it
-leaves, is documented in
+Offsets commit on enqueue rather than on completion, because committing on completion would put a
+clone and a full graph run back inside the poll loop —
 [ADR 0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md).
+
+Work is therefore written to a `work_inbox` table in this service's own Postgres *before* it
+reaches the in-memory queue, and deleted once the worker has finished with it. Anything still there
+at startup is work a previous process accepted and did not finish, and is put back on the queue
+before the poll loops start. Failing to record is treated as refusal, so nothing is ever queued
+that could not be written down — [ADR 0010](adr/0010-durable-work-hand-off.md).
 
 The queue is bounded, so it can fill. When it does the message is left uncommitted, its partition
 is rewound to it and paused, and it is redelivered once the worker drains — backpressure rather
@@ -371,7 +377,7 @@ construction and by policy.
 | **Crash between clone and checkpoint** | Startup reconciliation removes the orphaned workspace. |
 | **Broker unavailable at publish** | Producer construction is bounded on a background thread; publish failures are logged and counted, never raised. A broker outage cannot turn a completed run into a failed one. |
 | **Work queue full** | Backpressure, not loss. The message is left uncommitted, its partition rewound to it and paused, and it is redelivered once the worker drains. Previously the message was dropped and the offset committed past it, so the trigger was lost with no outcome event — [ADR 0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md). |
-| **Process dies with work queued** | Bounded loss window, documented rather than hidden. Mitigated by a small queue, a drain on shutdown that logs any loss, and the recurrence property of drift — [ADR 0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md). |
+| **Process dies with work queued** | Recovered. Work is written to a `work_inbox` table before it reaches the in-memory queue and deleted once finished, so anything unfinished is restored at the next startup — [ADR 0010](adr/0010-durable-work-hand-off.md). Verified by killing the container mid-drain: 12 of 14 items survived and were restored. The trade is a duplicate window rather than a loss window; a restored item that Kafka also redelivers carries the same `run_id` and is a no-op. |
 
 ---
 
@@ -490,7 +496,7 @@ them. See [ADR 0001](adr/0001-keep-the-control-plane-domain-agnostic.md).
 
 | Repository | Tests | Coverage | Notes |
 |---|---|---|---|
-| `agentic-sdlc-control-plane` | 220 | 92% | 0 skipped in CI; gate durability runs against a real PostgreSQL service container |
+| `agentic-sdlc-control-plane` | 226 | 91% | 0 skipped in CI; gate durability runs against a real PostgreSQL service container |
 | `url-shortener-api` (tenant) | 35 | 92% | |
 | `agentic-sdlc-mlops` | 24 | 75% | |
 | `agentic-sdlc-eventbus` | 8 | 100% | Contract package; enforced at 100% in CI |
@@ -522,6 +528,7 @@ the position the calling component actually occupies:
 | Full run to `completed` in-container | Pass — committed in the workspace, outcome published, workspace removed |
 | **Parked run resumed by a different process after the original was killed** | Pass — the durability property P4 depends on, demonstrated rather than argued |
 | Startup reconciliation removes orphaned workspaces | Pass |
+| **Work accepted from Kafka survives the process that accepted it** | Pass — 14 events published, container `SIGKILL`ed mid-drain, 12 unfinished items found in `work_inbox` and restored on the next start, with Kafka at zero lag throughout ([ADR 0010](adr/0010-durable-work-hand-off.md)) |
 | Startup reconciliation **leaves the audit trail alone** | Pass — previously deleted it on every restart ([ADR 0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md)) |
 | Audit chain written by the container verifies end to end | Pass — `verify_chain` ok over the real file |
 | Editing one record in the real audit file is detected | Pass — reported at the exact line, *"record contents do not match its own digest"* |
@@ -543,7 +550,7 @@ existed.
 |---|---|
 | Model-based drift (feature and prediction drift against a real model) | **Planned** — Phase 2. Requires a tenant with a model; the current drift path is operational metrics only. |
 | Outcome feedback loop (correlating a run's outcome back to the drift that triggered it) | **Planned** — the contract supports it; no consumer implemented. |
-| Durable work hand-off (replacing the in-memory queue) | **Planned** — closes the loss window in [ADR 0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md). |
+| Durable work hand-off | **Built** — [ADR 0010](adr/0010-durable-work-hand-off.md). Work is recorded in Postgres before it is queued and restored at startup, closing the loss window in [ADR 0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md). |
 | Parallel run execution | **Planned** — a worker pool, each with its own checkpointer. Bounded change; not needed at current volume. |
 | Explicit topic provisioning | **Planned** — auto-creation is unacceptable at real-cluster scale: a producer typo silently creates a junk topic, every topic inherits one-size-fits-all defaults, and any authenticated producer can create unbounded topics. Replace with CI-managed or Terraform-managed manifests carrying deliberate partition, replication, retention, and ACL settings. |
 | Multi-tenancy | **Planned** — the envelope carries `tenant`; nothing consumes it yet. |
@@ -563,3 +570,4 @@ existed.
 | [0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md) | A full work queue is backpressure, not loss |
 | [0008](adr/0008-the-audit-trail-must-be-checkable-not-merely-appended.md) | The audit trail must be checkable, not merely appended |
 | [0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md) | The audit trail does not live in the workspaces root |
+| [0010](adr/0010-durable-work-hand-off.md) | Durable work hand-off |
