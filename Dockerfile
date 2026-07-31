@@ -10,18 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-# The PAT is mounted as a BuildKit secret and the git config it creates is unset
-# within this same layer, so the credential never lands in the built image. Same
-# pattern as this platform's other services, which install the same private
-# agentic-events dependency.
-RUN --mount=type=secret,id=github_pat \
-    sh -c ' \
-        if [ -f /run/secrets/github_pat ]; then \
-            git config --global url."https://$(cat /run/secrets/github_pat)@github.com/".insteadOf "https://github.com/"; \
-        fi && \
-        pip install --no-cache-dir -r requirements.txt && \
-        git config --global --unset url."https://$(cat /run/secrets/github_pat 2>/dev/null)@github.com/".insteadOf 2>/dev/null || true \
-    '
+# agentic-events resolves over anonymous HTTPS. This build previously mounted a PAT
+# as a BuildKit secret because agentic-sdlc-eventbus was private; it is public now,
+# so no credential is involved at build time at all.
+#
+# The RUNTIME PAT is a separate concern and is unchanged: every run clones its own
+# target repository, reading the token from GIT_PAT_FILE via a credential helper
+# invoked at request time. That is why git is installed above.
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

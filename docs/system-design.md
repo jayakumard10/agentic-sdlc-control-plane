@@ -392,7 +392,7 @@ construction and by policy.
 | Token in logs | Redacted from text bound for a log line, as defence in depth. |
 | Database credentials | File-based secrets via the `_FILE` convention. Credential components are percent-encoded into the connection URI, so a password containing `@` or `/` fails cleanly rather than parsing into the wrong host. |
 | Generated code | Guardrail scanning for unsafe calls, DDL statements, and secret-shaped strings, surfaced at the release gate and blocking by default. |
-| Repository visibility | All repositories private. No CI step publishes to a public registry or assumes public visibility. |
+| Repository visibility | All four platform repositories are public. Nothing in this design depends on their privacy: every credential is a mounted file-based secret, no CI job requires one, and no CI step publishes to a registry. The runtime PAT is scoped to the *tenant* repositories a run clones, which is independent of this platform's own visibility. |
 
 ---
 
@@ -403,10 +403,8 @@ only in that the event bus should exist before producers.
 
 ### 10.1 Resource footprint — measured
 
-All containers running simultaneously, measured with `docker stats` on 2026-07-26:
-
-All containers running simultaneously, re-measured on 2026-07-27 after `mlflow` was re-sized (see
-mlops ADR 0004):
+All containers running simultaneously, re-measured with `docker stats` on 2026-07-27 after
+`mlflow` was re-sized (see mlops ADR 0004):
 
 | Container | Repository | Measured | Limit | Utilisation |
 |---|---|---|---|---|
@@ -520,7 +518,7 @@ the position the calling component actually occupies:
 | Pattern subscription discovers a topic created after consumer startup | Pass — run began ~31 s after publish, matching the tuned 30 s `metadata.max.age.ms` |
 | Container **consumes** through the cross-container listener | Pass |
 | Container **publishes** through the cross-container listener | Pass — message consumed back off the topic, `producer.instance_id` matching the container hostname |
-| Private-repository HTTPS clone via the mounted PAT | Pass |
+| Private-repository HTTPS clone via the mounted PAT | Pass — against a repository that was private when this was run; the platform's own repositories are public now, but clone-per-run still authenticates the same way against private tenant repositories |
 | PAT lacking access to the target | Pass — degrades to `clone_failed` with the real error, no crash |
 | Gate parks without blocking the poll loop | Pass |
 | Decision from Kafka resumes the parked run | Pass |

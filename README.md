@@ -118,8 +118,8 @@ cp secrets/github_pat.txt.example secrets/github_pat.txt
 ```
 
 Edit both: a password of your choosing, and a fine-grained read-only GitHub PAT with access to the
-repositories this service will clone and to `agentic-sdlc-eventbus` (a private dependency needed at
-build time). Then:
+repositories this service will clone. The PAT is a runtime credential only — it is what
+clone-per-run authenticates with. Nothing at build time needs it. Then:
 
 ```bash
 docker compose up -d --build
@@ -232,7 +232,7 @@ Run end-to-end against a real broker and a real Postgres, from inside the contai
 | Pattern subscription discovers a topic created after startup | PASS — run began ~31s after publish |
 | Container consumes a drift event through the event bus's cross-container listener | PASS |
 | Container publishes its outcome event through the same listener | PASS — consumed back off the topic, `producer.instance_id` matching the container hostname |
-| Private-repo HTTPS clone using the mounted PAT | PASS — cloned at commit `335472aa` |
+| Private-repo HTTPS clone using the mounted PAT | PASS — cloned at commit `335472aa`, against a repository that was private when this was run |
 | A PAT lacking access fails cleanly | PASS — 403 became a `clone_failed` outcome, no crash |
 | Run parks at a real `interrupt()` without blocking the poll loop | PASS |
 | Kafka gate decision resumes the parked run | PASS |
@@ -258,10 +258,11 @@ skipping the durability tests — those tests are the reason a durable checkpoin
 an in-memory one, so skipping them would leave the property that matters unverified. It also
 asserts that no tenant-specific vocabulary has entered the package or its tests.
 
-The compose job builds the image and asserts the build credential did not persist into it, by
-reading `/root/.gitconfig`'s size rather than trusting the layer that unsets it. It does not run
-the consumer: this repo is independently clonable with no sibling checkout, so there is no broker
-in CI to point it at.
+The compose job builds the image and asserts no credential persisted into it, by reading
+`/root/.gitconfig`'s size. No build step writes one today, so that check passes trivially — it is
+kept as a regression guard, because this is the image that handles a real PAT at runtime. It does
+not run the consumer: this repo is independently clonable with no sibling checkout, so there is no
+broker in CI to point it at.
 
-Both jobs need a repository secret named `EVENTBUS_READ_PAT` — a fine-grained, read-only PAT scoped
-to `agentic-sdlc-eventbus`, which hosts the private `agentic-events` dependency.
+Neither job needs a repository secret. `agentic-events` resolves over anonymous HTTPS from the
+public `agentic-sdlc-eventbus` repo, and CI never performs a real clone.
