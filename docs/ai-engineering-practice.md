@@ -15,13 +15,19 @@ the defects.
 
 ## 1. How AI assistance was applied
 
-Three roles, applied per repository, recorded in each repository's `CLAUDE.md`:
+Three roles, applied per repository. Each is a committed agent definition, not a description of
+one — the standing instructions are in [`CLAUDE.md`](../CLAUDE.md) and the roles that act on them
+are in [`.claude/agents/`](../.claude/agents/), so the process that produced this repository can
+be re-run by anyone who clones it:
 
-| Role | What it produced | Where it lives |
-|---|---|---|
-| **Design** | Architecture, boundaries, event contract, diagrams | [`system-design.md`](system-design.md), [`adr/`](adr/) |
-| **Development** | Implementation, error handling, logging, audit sink, commit history | Source, plus 67 commits across four repositories |
-| **QA** | Unit tests with coverage, and functional verification for anything a unit test cannot reach | Test suites, plus [§11](system-design.md#11-verification) of the design doc |
+| Role | Definition | What it produced | Where that lives |
+|---|---|---|---|
+| **Design** | [`design.md`](../.claude/agents/design.md) | Architecture, boundaries, event contract, diagrams | [`system-design.md`](system-design.md), [`adr/`](adr/) |
+| **Development** | [`development.md`](../.claude/agents/development.md) | Implementation, error handling, logging, audit sink, commit history | Source, plus 71 commits across four repositories |
+| **QA** | [`qa.md`](../.claude/agents/qa.md) | Unit tests with coverage, and functional verification for anything a unit test cannot reach | Test suites, plus [§11](system-design.md#11-verification) of the design doc |
+
+The rules in those three files are not aspirational. Each one is traceable to an ADR in §3 below:
+the agent encodes the rule, and the ADR records the defect that produced it.
 
 The division that matters is the third one: **unit tests and functional verification are treated as
 answering different questions, and neither is allowed to stand in for the other.**
