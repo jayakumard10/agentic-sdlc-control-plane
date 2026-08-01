@@ -572,6 +572,54 @@ def test_audit_events_reach_both_the_file_and_the_topic(
     )
 
 
+def test_every_run_is_audited_not_only_the_first(
+    worker_env: Path, origin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """One worker, two runs, both audited.
+
+    The regression this exists for: the worker holds one TelemetrySink for the life of
+    the process, but each run threads a fresh GraphState whose events list starts
+    empty. A flushed-count shared across runs sliced run 2's list from run 1's
+    high-water mark and wrote nothing, so only the first run after a restart was ever
+    audited.
+
+    Nothing in the existing suite could see it. Every audit test built one worker and
+    drove one run - the fixture shared the code's assumption that a sink only ever
+    sees a single run. Nor would any external signal have shown it: both runs
+    completed, both published outcomes, and verify_chain reported the file intact,
+    because a chain proves record N follows N-1 and says nothing about records that
+    were never written. See docs/adr/0011.
+    """
+    _published(monkeypatch)
+    audited: list = []
+    monkeypatch.setattr(events, "publish_audit_event", audited.append)
+
+    audit_path = tmp_path / "audit" / "runs.jsonl"
+    worker = consumer.Worker(build_memory_checkpointer(), audit_sink=TelemetrySink(audit_path))
+
+    worker.handle_trigger(
+        consumer.TriggerWork("run-first", "brownfield", str(origin), "main", "fix it")
+    )
+    first_count = verify_chain(audit_path).records_checked
+    assert first_count > 0, "the first run is audited"
+
+    worker.handle_trigger(
+        consumer.TriggerWork("run-second", "brownfield", str(origin), "main", "fix it")
+    )
+
+    chain = verify_chain(audit_path)
+    assert chain.ok, "one continuous chain across both runs"
+    assert chain.records_checked > first_count, (
+        "the second run must add records; a shared cursor silently wrote none"
+    )
+    assert {e.correlation_id for e in audited} == {"run-first", "run-second"}, (
+        "both runs must reach the audit topic as well as the file"
+    )
+    assert chain.records_checked == len(audited), (
+        "the file and the topic must carry the same records across runs"
+    )
+
+
 def test_a_broker_outage_does_not_fail_a_run_or_lose_the_local_audit(
     worker_env: Path, origin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

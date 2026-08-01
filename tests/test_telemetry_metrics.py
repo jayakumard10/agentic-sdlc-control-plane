@@ -24,23 +24,57 @@ def test_telemetry_sink_flushes_only_new_events(tmp_path: Path):
     sink = TelemetrySink(tmp_path / "events.jsonl")
 
     events1 = [AuditEvent(node="a", event_type="node_start", detail="start")]
-    lines1 = sink.flush_new_events(events1)
+    lines1 = sink.flush_new_events("run-1", events1)
     assert len(lines1) == 1
     assert (tmp_path / "events.jsonl").read_text().count("\n") == 1
 
     events2 = events1 + [AuditEvent(node="a", event_type="node_end", detail="end")]
-    lines2 = sink.flush_new_events(events2)
+    lines2 = sink.flush_new_events("run-1", events2)
     assert len(lines2) == 1
     assert (tmp_path / "events.jsonl").read_text().strip().count("\n") + 1 == 2
 
     # no new events since the last flush -> nothing written, nothing rendered
-    assert sink.flush_new_events(events2) == []
+    assert sink.flush_new_events("run-1", events2) == []
 
 
-def _write_events(path: Path, count: int) -> TelemetrySink:
+def test_a_second_run_through_the_same_sink_is_audited(tmp_path: Path):
+    """The cursor is per run, not per sink.
+
+    One sink is built per process and reused for every run, but each run threads its
+    own GraphState with its own events list starting at zero. A single shared counter
+    meant run 2's list was sliced from run 1's high-water mark and wrote nothing - so
+    only the first run after a restart was ever audited. Nothing detected it: the run
+    completed, published its outcome, and verify_chain reported the file intact,
+    because a chain cannot detect records that were never written. See docs/adr/0011.
+    """
+    path = tmp_path / "events.jsonl"
+    sink = TelemetrySink(path)
+
+    run1 = [AuditEvent(node="n", event_type="node_end", detail=f"run1-{i}") for i in range(3)]
+    assert len(sink.flush_new_events("run-1", run1)) == 3
+
+    # A shorter second run - the case the old high-water mark silently swallowed whole.
+    run2 = [AuditEvent(node="n", event_type="node_end", detail=f"run2-{i}") for i in range(2)]
+    assert len(sink.flush_new_events("run-2", run2)) == 2
+
+    body = path.read_text(encoding="utf-8")
+    assert "run2-0" in body and "run2-1" in body
+    assert len(_lines(path)) == 5
+
+    # One continuous chain across both runs, not two segments.
+    assert [json.loads(line)["seq"] for line in _lines(path)] == [0, 1, 2, 3, 4]
+    assert verify_chain(path).ok
+
+    # Retiring a run drops only its own cursor.
+    sink.forget("run-1")
+    assert sink.flush_new_events("run-2", run2) == []
+
+
+def _write_events(path: Path, count: int, run_id: str = "run-1") -> TelemetrySink:
     sink = TelemetrySink(path)
     sink.flush_new_events(
-        [AuditEvent(node=f"n{i}", event_type="node_end", detail=f"detail {i}") for i in range(count)]
+        run_id,
+        [AuditEvent(node=f"n{i}", event_type="node_end", detail=f"detail {i}") for i in range(count)],
     )
     return sink
 
@@ -165,7 +199,8 @@ def test_a_restart_extends_the_existing_chain(tmp_path: Path):
 
     second_sink = TelemetrySink(path)
     second_sink.flush_new_events(
-        [AuditEvent(node="after-restart", event_type="node_start", detail="resumed")]
+        "run-after-restart",
+        [AuditEvent(node="after-restart", event_type="node_start", detail="resumed")],
     )
 
     result = verify_chain(path)

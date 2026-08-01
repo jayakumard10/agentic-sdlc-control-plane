@@ -468,6 +468,15 @@ appended — see [ADR 0008](adr/0008-the-audit-trail-must-be-checkable-not-merel
 | Hash-chained JSONL file | Each record carries the SHA-256 of its predecessor. `verify_chain` reports the first record that does not hold, by line and reason. | Writable by whoever holds the volume. Truncation of the tail leaves a shorter chain that still verifies. |
 | `control-plane.audit.v1` | An independent copy, out of reach of that writer. Comparison against it is what catches truncation. | Retention is the broker's default until explicit topic provisioning lands ([§12](#12-roadmap)). |
 
+**A chain says nothing about records that were never written.** Both sinks record events per run,
+and the cursor tracking what has already been flushed is keyed by `run_id` and retired with the run
+— [ADR 0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md). When that cursor was
+process-scoped instead, every run after the first went unrecorded while `verify_chain` still
+reported `ok=True`, because the chain it checked was intact; it was simply short. The check that
+detects this class is counting records per `correlation_id` on `control-plane.audit.v1` against
+runs actually served — the topic is what makes that comparison possible, which is a second reason
+for the two-sink design beyond tamper-detection.
+
 Neither is WORM storage. Both sinks sit inside the trust boundary the platform runs in, so the
 claim is *tampering is detectable*, not *tampering is impossible*. Regulatory-grade retention means
 shipping these records somewhere the platform cannot delete its own history — object-lock storage
@@ -569,3 +578,4 @@ existed.
 | [0008](adr/0008-the-audit-trail-must-be-checkable-not-merely-appended.md) | The audit trail must be checkable, not merely appended |
 | [0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md) | The audit trail does not live in the workspaces root |
 | [0010](adr/0010-durable-work-hand-off.md) | Durable work hand-off |
+| [0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md) | The audit cursor belongs to the run, not the process |

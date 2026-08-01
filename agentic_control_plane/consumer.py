@@ -491,7 +491,7 @@ class Worker:
         if not state_events:
             return
         try:
-            new_events = self.audit_sink.flush_new_events(state_events)
+            new_events = self.audit_sink.flush_new_events(result.run_id, state_events)
         except Exception:
             logger.exception("failed to write audit events; continuing")
             return
@@ -547,6 +547,11 @@ class Worker:
         )
         events.publish_run_outcome(envelope)
         self._targets.pop(run_id, None)
+        # Retire the run's audit cursor alongside its target. Both are per-run state
+        # on a process-lifetime object, and a cursor left behind here is what made
+        # every run after the first go unaudited - see docs/adr/0011.
+        if self.audit_sink is not None:
+            self.audit_sink.forget(run_id)
 
     def run_forever(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():
