@@ -379,6 +379,32 @@ construction and by policy.
 | **Work queue full** | Backpressure, not loss. The message is left uncommitted, its partition rewound to it and paused, and it is redelivered once the worker drains. Previously the message was dropped and the offset committed past it, so the trigger was lost with no outcome event — [ADR 0007](adr/0007-a-full-work-queue-is-backpressure-not-loss.md). |
 | **Process dies with work queued** | Recovered. Work is written to a `work_inbox` table before it reaches the in-memory queue and deleted once finished, so anything unfinished is restored at the next startup — [ADR 0010](adr/0010-durable-work-hand-off.md). Verified by killing the container mid-drain: 12 of 14 items survived and were restored. The trade is a duplicate window rather than a loss window; a restored item that Kafka also redelivers carries the same `run_id` and is a no-op. |
 
+### 8.1 Durability posture — what is a system of record and what is not
+
+Reviewers reasonably ask which stores are single points of failure. The answer differs per store,
+and the distinction that matters is whether a store's contents can be rebuilt from somewhere else.
+
+| Store | Role | If its disk is lost |
+|---|---|---|
+| **mlops DuckDB** | Derived cache | **Rebuildable.** It holds telemetry ingested from `*.request-telemetry.v*`. Replay the topic within its retention and the windows are reconstructed. This is what the event bus is *for*, and it is why a managed warehouse is not on the roadmap: the store is not the system of record, and treating it as one would be paying for a durability guarantee that Kafka already provides. |
+| **control-plane Postgres** | System of record for in-flight runs | **Lossy.** It holds LangGraph checkpoints and the `work_inbox`. Losing it strands parked runs: they are neither resumable nor terminal, and no outcome is published. Nothing else holds that state. Backup is a deployment concern this repository does not prescribe. |
+| **Audit JSONL volume** | One of two audit copies | **Tolerable alone.** The Kafka `control-plane.audit.v1` copy survives it — that is the point of two sinks that fail differently ([ADR 0008](adr/0008-the-audit-trail-must-be-checkable-not-merely-appended.md)). |
+| **Kafka log dir** | The independent audit copy, and every topic | **The real limit — see below.** |
+
+**The broker is the actual single point of failure, not DuckDB.** It runs single-node in KRaft
+mode with `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1`; on one node no topic can be replicated
+further. ADR 0008's tamper-evidence argument rests on the audit topic being *an independent copy
+out of reach of whoever can write the file volume* — and that copy currently has no redundancy of
+its own. Losing the broker's disk loses it, and with it the comparison that detects truncation of
+the JSONL tail.
+
+That is a deliberate development-scale trade, not an oversight: a single-node broker fits the 8 GiB
+allocation this platform is developed in, and the alternative is three brokers for a workload whose
+volume is drift events. But it bounds the integrity claim, and the claim should be read with the
+bound attached: **tampering with the file is detectable for as long as the broker's copy exists.**
+A production deployment raises the replication factor before it relies on that property, and that
+is the change that matters — not the choice of analytics store.
+
 ---
 
 ## 9. Security
