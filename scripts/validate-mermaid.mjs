@@ -18,10 +18,20 @@ import { execSync } from "child_process";
 import { JSDOM } from "jsdom";
 
 const dom = new JSDOM("<!doctype html><body></body>", { pretendToBeVisual: true });
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
-global.Element = dom.window.Element;
+
+// Assigned through defineProperty rather than `global.x = y`. On Node 22+ some of
+// these - `navigator` in particular - are getter-only on globalThis, so a plain
+// assignment throws `Cannot set property navigator of #<Object> which has only a
+// getter`. Node 20 allows it, which is exactly how this shipped broken: it was
+// tested locally on 20 and CI runs 22.
+for (const [name, value] of [
+  ["window", dom.window],
+  ["document", dom.window.document],
+  ["navigator", dom.window.navigator],
+  ["Element", dom.window.Element],
+]) {
+  Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+}
 
 const mermaid = (await import("mermaid")).default;
 mermaid.initialize({ startOnLoad: false, securityLevel: "loose" });
