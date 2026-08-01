@@ -10,6 +10,12 @@ continuing.
 > platform, then [`docs/system-design.md`](docs/system-design.md) for the authoritative design.
 > This README covers how to run and use this service specifically.
 
+> **Want to watch a complete governed run?** [Running the whole platform](#running-the-whole-platform)
+> gives an OS-neutral command sequence that drives a drift signal through a clone, two human gates,
+> a real pytest execution and a commit, to a `completed` outcome — in about 90 seconds, with no
+> PowerShell and no credentials. The recorded result is in
+> [Functional verification](#functional-verification).
+
 ## Tech stack
 
 - **Orchestration**: Python 3.12, LangGraph 1.2.9
@@ -166,6 +172,74 @@ for why the shipped image has none.
 
 A cold start to `completed` takes roughly 90 seconds.
 
+#### Driving a run without the script
+
+The script above is a Windows convenience wrapper, not the only way in. Two repositories and four
+commands are enough to see the whole governed path, on any OS with Docker. No credential is
+required: the repository the run clones is public.
+
+```bash
+# 1. Broker, from the agentic-sdlc-eventbus checkout
+docker compose up -d
+
+# 2. Control plane, from this checkout, with the demo fixture mounted read-only
+docker compose -f docker-compose.yml -f scripts/demo/compose.demo-fixtures.yml up -d
+```
+
+```bash
+# 3. Trigger a run. RUN_ID must be unique per run - it becomes the LangGraph thread_id
+#    that the gate decision below correlates on.
+RUN_ID="demo-$(date +%s)"
+REPO="https://github.com/jayakumard10/agentic-sdlc-eventbus.git"
+kafka () { docker run --rm -i --network eventbus apache/kafka:4.1.2 "$@"; }
+
+# event_id is a strict UUID on the envelope. Generated inside the consumer container
+# rather than on the host, because no single host command covers Linux, macOS and Git
+# Bash for Windows - `uuidgen` and /proc/sys/kernel/random/uuid are each missing on at
+# least one of them. The container is already running by step 2.
+uuid () { docker exec agentic-sdlc-control-plane-consumer python -c "import uuid;print(uuid.uuid4())"; }
+
+envelope () {  # $1 = event_type, $2 = service, $3 = payload JSON
+  printf '{"schema_version":"1.0","event_id":"%s","correlation_id":"%s","tenant":"default","service":"%s","event_type":"%s","timestamp":"%s","producer":{"service":"%s","instance_id":"manual"},"git_target":{"repo_url":"%s","branch":"main","commit_sha":null},"scenario_type":"brownfield","metrics":{},"payload":%s}\n' \
+    "$(uuid)" "$RUN_ID" "$2" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" "$REPO" "$3"
+}
+
+envelope drift-detected agentic-sdlc-mlops '{"sample_size":483}' \
+  | kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server broker:19092 \
+      --topic mlops.drift-detected.v1
+```
+
+The run clones the target, then parks at the first gate. Watch it with
+`docker logs -f agentic-sdlc-control-plane-consumer`.
+
+```bash
+# 4. Answer each gate. A brownfield run fires two - codebase_impact_review, then
+#    merge_release_approval - so send this twice, waiting for the park in between.
+envelope gate-decision agentic-sdlc-control-plane \
+  '{"gate_type":"any","decision":"approve","decided_by":"a-reviewer","comment":"Approved."}' \
+  | kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server broker:19092 \
+      --topic control-plane.gate-decision.v1
+```
+
+Read the outcome back off the broker, and check the audit trail is intact:
+
+```bash
+kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server broker:19092 \
+  --topic control-plane.run-outcome.v1 --from-beginning --max-messages 200 --timeout-ms 20000
+
+docker exec agentic-sdlc-control-plane-consumer python -c \
+  "from pathlib import Path; from agentic_control_plane.telemetry import verify_chain; \
+   print(verify_chain(Path('/var/audit/runs.jsonl')))"
+```
+
+One portability note, hit while verifying this sequence: on **Git Bash for Windows**, export
+`MSYS_NO_PATHCONV=1` first, or `/opt/kafka/...` is rewritten into a Windows path before it ever
+reaches the container, and the producer fails with `exec: ... not found`.
+
+The `uuid` helper exists for the same class of reason. `event_id` is a strict `UUID` on the
+envelope, and an empty or malformed one fails validation — the event is routed to the DLQ and the
+parked run simply never resumes, which looks like a hang rather than a rejection.
+
 ## Local development
 
 ```bash
@@ -205,6 +279,12 @@ Neither generation mode works out of the box, by design rather than omission:
 
 Without either, a run reaches the coder node and safe-stops with a stated reason, ending in a
 defined terminal state with outcome telemetry. See `docs/adr/0001`.
+
+Live mode has been exercised for real, not just reasoned about: running the worker on a host that
+has the CLI (rather than in the shipped image) drove a full brownfield run in which the coder node
+invoked `claude` and generated two files in 112 s, `test_executor` ran a real pytest against them,
+and the release gate committed the result — see [Functional verification](#functional-verification).
+That is the same code path a customised image would take; only the location of the CLI differs.
 
 ## Testing
 
@@ -246,6 +326,20 @@ Run end-to-end against a real broker and a real Postgres, from inside the contai
 | Workspace deleted on terminal state | PASS |
 | Parked run resumed by a *different* process after the original was killed | PASS |
 | Startup reconciliation removes orphaned workspaces | PASS |
+| The documented script-free sequence above, run in replay mode | PASS — 2026-08-01, cloned at `820750d2`, both gates answered, real pytest passed in 1336 ms, 0 guardrail findings, commit `9637e763`, `completed` |
+| The same sequence a second time, in the same process | PASS — `completed`, `run-outcome` published with the clone-time `commit_sha` |
+| **`ORCHESTRATOR_MODE=live`: real generation via the `claude` CLI** | PASS — 2026-08-01, coder generated 2 file(s) in 111 875 ms, `test_executor` passed a real pytest against them in 1 609 ms, 0 guardrail findings, commit `9251028d`, `completed` |
+| **Every run is audited, not only the first** | PASS after ADR 0011. Before the fix the second run above published **zero** audit records despite completing; after it, two consecutive runs recorded 2 and 14 records on `control-plane.audit.v1` |
+| Hash-chained audit trail | PASS — `verify_chain` clean, and continuous across a container restart |
+| An empty `event_id` is rejected rather than acted on | PASS — envelope validation routed it to the DLQ; the parked run was untouched and resumed normally once a valid decision arrived |
+
+The two rows about running the sequence twice are the ones worth understanding together, because
+the second run is what exposed [ADR 0011](docs/adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md).
+Both runs completed and published outcomes, and `verify_chain` reported the trail intact — while
+the second run was missing from it entirely. A chain proves record N follows N−1; it is evidence
+about the records that are present and none at all about the ones that should be. The check that
+actually catches it is counting records per `correlation_id` on the audit topic against runs
+served, which is what the "every run is audited" row reports.
 
 Memory, sampled across a full run including the pytest subprocess: **69.6 MiB against the 1 GiB
 limit**, flat throughout; the Postgres container sits at 36 MiB against 512 MiB.
