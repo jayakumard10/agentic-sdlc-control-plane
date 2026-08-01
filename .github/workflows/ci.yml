@@ -67,6 +67,15 @@ jobs:
         # quietly with the property those tests exist to prove left unverified.
         run: pytest --cov=agentic_control_plane --cov-report=term-missing --cov-fail-under=90
 
+      - name: Assert every mermaid diagram parses
+        # "The diagrams render on GitHub" has broken three times, and every time the
+        # repository looked fine locally while GitHub showed "Unable to render rich
+        # display" to anyone browsing it. Parsing is cheap and catches the whole class
+        # seen so far; rendering needs a headless browser and is not worth the fragility.
+        run: |
+          npm install --no-fund --no-audit --no-save mermaid jsdom
+          node scripts/validate-mermaid.mjs
+
       - name: Assert the platform carries no tenant-specific vocabulary
         # This repo is domain-agnostic by requirement, not by convention. Checked
         # here so a regression fails a build rather than waiting for review.
