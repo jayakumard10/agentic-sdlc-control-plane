@@ -5,7 +5,7 @@ plan): on failure, increments retry_count while under the bounded limit; once th
 limit is reached, flips fallback_triggered so the next Coder invocation uses a
 reduced-scope prompt; if the fallback attempt also fails, counters are left as-is.
 
-Also sets route_hint explicitly for graph.py's routing (Phase 3): "fallback_triggered
+Also sets route_hint explicitly for graph.py's routing: "fallback_triggered
 is True and the test failed" is ambiguous on its own between "about to try the
 fallback attempt" and "the fallback attempt just failed too" - this node has the
 full before/after context to disambiguate at the moment it happens, so the router

@@ -51,7 +51,7 @@ def test_scan_classifies_modules_vs_apis_using_posix_paths(tmp_path: Path):
     """Regression test: Path.relative_to(...) stringifies with backslashes on
 
     Windows, which would corrupt matching once fixtures replay inside Linux
-    containers. Found via smoke-testing during Phase 2.
+    containers. Found by smoke-testing the container, not by a unit test.
     """
     _seed_files(tmp_path)
     compiled = _build_graph(tmp_path)
