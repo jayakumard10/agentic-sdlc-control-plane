@@ -232,9 +232,10 @@ docker exec agentic-sdlc-control-plane-consumer python -c \
    print(verify_chain(Path('/var/audit/runs.jsonl')))"
 ```
 
-One portability note, hit while verifying this sequence: on **Git Bash for Windows**, export
-`MSYS_NO_PATHCONV=1` first, or `/opt/kafka/...` is rewritten into a Windows path before it ever
-reaches the container, and the producer fails with `exec: ... not found`.
+Verified on both Linux and Git Bash for Windows. One portability note, and it applies only to
+**Git Bash for Windows**: export `MSYS_NO_PATHCONV=1` first, or `/opt/kafka/...` is rewritten into
+a Windows path before it ever reaches the container, and the producer fails with
+`exec: ... not found`. On Linux and macOS nothing extra is needed.
 
 The `uuid` helper exists for the same class of reason. `event_id` is a strict `UUID` on the
 envelope, and an empty or malformed one fails validation — the event is routed to the DLQ and the
@@ -329,8 +330,9 @@ Run end-to-end against a real broker and a real Postgres, from inside the contai
 | The documented script-free sequence above, run in replay mode | PASS — 2026-08-01, cloned at `820750d2`, both gates answered, real pytest passed in 1336 ms, 0 guardrail findings, commit `9637e763`, `completed` |
 | The same sequence a second time, in the same process | PASS — `completed`, `run-outcome` published with the clone-time `commit_sha` |
 | **`ORCHESTRATOR_MODE=live`: real generation via the `claude` CLI** | PASS — 2026-08-01, coder generated 2 file(s) in 111 875 ms, `test_executor` passed a real pytest against them in 1 609 ms, 0 guardrail findings, commit `9251028d`, `completed` |
-| **Every run is audited, not only the first** | PASS after ADR 0011. Before the fix the second run above published **zero** audit records despite completing; after it, two consecutive runs recorded 2 and 14 records on `control-plane.audit.v1` |
-| Hash-chained audit trail | PASS — `verify_chain` clean, and continuous across a container restart |
+| The same sequence run from a **Linux** shell | PASS — driven from a Linux container against the same daemon, twice, both to `completed` (commits `26c3575a`, `65d809f5`) |
+| **Every run is audited, not only the first** | PASS after ADR 0011 — two consecutive runs on a fresh audit volume recorded **17 records each** on `control-plane.audit.v1`, one continuous 34-record chain. Before the fix, the second run recorded **zero** despite completing |
+| Hash-chained audit trail | PASS — `verify_chain` clean over all 34 records, and continuous across a container restart |
 | An empty `event_id` is rejected rather than acted on | PASS — envelope validation routed it to the DLQ; the parked run was untouched and resumed normally once a valid decision arrived |
 
 The two rows about running the sequence twice are the ones worth understanding together, because
