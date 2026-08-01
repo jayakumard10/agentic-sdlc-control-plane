@@ -20,3 +20,8 @@ secrets/*.txt
 # mistake. Never commit these.
 4-repo-migration-PLAN.md
 4-repo-migration-PROMPT.md
+
+# Created by the mermaid diagram check, which npm-installs into the repo.
+# CI does this on every run; nothing here is ever a build input.
+node_modules/
+package-lock.json
