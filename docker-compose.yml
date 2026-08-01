@@ -26,7 +26,6 @@ services:
     image: agentic-sdlc-control-plane-consumer:latest
     build:
       context: .
-      secrets: [github_pat]
     container_name: agentic-sdlc-control-plane-consumer
     depends_on:
       postgres:

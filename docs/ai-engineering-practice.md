@@ -15,13 +15,19 @@ the defects.
 
 ## 1. How AI assistance was applied
 
-Three roles, applied per repository, recorded in each repository's `CLAUDE.md`:
+Three roles, applied per repository. Each is a committed agent definition, not a description of
+one — the standing instructions are in [`CLAUDE.md`](../CLAUDE.md) and the roles that act on them
+are in [`.claude/agents/`](../.claude/agents/), so the process that produced this repository can
+be re-run by anyone who clones it:
 
-| Role | What it produced | Where it lives |
-|---|---|---|
-| **Design** | Architecture, boundaries, event contract, diagrams | [`system-design.md`](system-design.md), [`adr/`](adr/) |
-| **Development** | Implementation, error handling, logging, audit sink, commit history | Source, plus 67 commits across four repositories |
-| **QA** | Unit tests with coverage, and functional verification for anything a unit test cannot reach | Test suites, plus [§11](system-design.md#11-verification) of the design doc |
+| Role | Definition | What it produced | Where that lives |
+|---|---|---|---|
+| **Design** | [`design.md`](../.claude/agents/design.md) | Architecture, boundaries, event contract, diagrams | [`system-design.md`](system-design.md), [`adr/`](adr/) |
+| **Development** | [`development.md`](../.claude/agents/development.md) | Implementation, error handling, logging, audit sink, commit history | Source, plus 71 commits across four repositories |
+| **QA** | [`qa.md`](../.claude/agents/qa.md) | Unit tests with coverage, and functional verification for anything a unit test cannot reach | Test suites, plus [§11](system-design.md#11-verification) of the design doc |
+
+The rules in those three files are not aspirational. Each one is traceable to an ADR in §3 below:
+the agent encodes the rule, and the ADR records the defect that produced it.
 
 The division that matters is the third one: **unit tests and functional verification are treated as
 answering different questions, and neither is allowed to stand in for the other.**
@@ -48,9 +54,9 @@ produced by running the thing, not by reasoning about it.
 
 ## 3. The measured result
 
-**Fifteen of the platform's nineteen ADRs document defects found only by running real
+**Sixteen of the platform's twenty ADRs document defects found only by running real
 infrastructure, or by reading the code path an external reviewer pointed at.** The other four
-record design decisions. Every one of the fifteen shares a property: a green unit suite was
+record design decisions. Every one of the sixteen shares a property: a green unit suite was
 passing at the time, and no reasonable addition to it would have caught the defect.
 
 | ADR | Repository | Defect | Found by |
@@ -70,6 +76,7 @@ passing at the time, and no reasonable addition to it would have caught the defe
 | `0007` | mlops | Pattern subscription skipped every event published before it discovered a topic — `auto_offset_reset` was unset, so the client default positioned at the end and committed past the data | Comparing rows written against events published, after a wrong hypothesis was ruled out |
 | `0001` | eventbus | Cross-container traffic silently failed — bootstrap succeeded, then the client was told to reconnect to `localhost` | Container-to-container traffic, in both directions |
 | `0001` | url-shortener | `KafkaProducer` construction blocked every HTTP request indefinitely when the broker was down | Running the real stack with the broker deliberately stopped |
+| [0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md) | control-plane | Only the **first** run after a process start was audited. The sink's flushed-count was per process while each run's event list is per run, so run 2 was sliced from run 1's high-water mark and wrote nothing | Driving two real runs against one container and reading the trail afterwards — the run completed, published its outcome, logged cleanly, and `verify_chain` returned `ok=True` |
 
 Two further defects were found the same way and fixed without a dedicated ADR: outcome events
 carried a null `commit_sha` because the value was captured at clone time but read on a later slice,
@@ -96,6 +103,8 @@ is the transferable part:
 | **A habit mistaken for a property** | The audit sink only ever appended, was documented as append-only, and was accurately described. None of that survived the question *"what stops this being edited?"* |
 | **A contract stated in prose, in the other repository** | The control plane documented that `correlation_id` was derived from the drift condition and built deduplication on it. mlops generated a random one. The shared envelope enforces that the field is a *string* and nothing more, so both repos were internally consistent and self-consistently wrong. |
 | **Every external signal agreed, and none of them measured the thing** | Consumer offsets advanced, lag was zero, logs were clean — and the telemetry had been skipped, not processed. A consumer that skips messages is indistinguishable from one that processed them, from the outside. Only comparing *rows written* against *events published* could tell. |
+| **A process-lifetime object held per-run state** | The audit sink's flushed-count survived the run it belonged to and was applied to the next one, whose event list starts empty. The leftover value is always a plausible one, so the failure is silent by construction. |
+| **The integrity check could not see the failure it was there for** | `verify_chain` reported the audit trail intact while whole runs were missing from it. A chain proves record N follows N−1; it is evidence about the records that are present and none at all about the ones that should be. |
 
 Every one of these is invisible to a unit test *by construction*, not by oversight. That is the
 argument for the practice, and it is why coverage percentage is reported alongside functional
@@ -123,6 +132,12 @@ The rules the nine defects produced, each now applied platform-wide:
 6. **Where a function reports a condition its caller must act on, a test asserts what the caller
    does** — not only that the function reports it correctly (ADR 0007). A verified contract says
    nothing about a call site honouring it.
+
+7. **An object whose lifetime is the process must not hold state whose lifetime is one unit of
+   work** (ADR 0011). Where it must, that state is keyed by the unit and retired with it — and the
+   test drives *two* units through one object, because one never fails. This is the rule that
+   catches a whole class the suite is structurally blind to: every audit test built one worker and
+   ran one run, so the fixtures encoded the same assumption the code did.
 
 Rule 5 is the one with the widest reach, and the platform's remaining known gap sits against it:
 the drift-detection path is exercised from a published event onward, but the producing side has not

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Launch the whole agentic-sdlc platform locally, in dependency order, with health gating.
 
@@ -34,9 +34,8 @@
     Directory containing all four repository folders. Defaults to the parent of this repository.
 
 .PARAMETER Build
-    Rebuild images before starting. Needed on first run, or after code changes. Requires a
-    GitHub PAT in each repo's secrets/github_pat.txt (the shared agentic-events package is a
-    private dependency).
+    Rebuild images before starting. Needed on first run, or after code changes. No credential is
+    required to build: the shared agentic-events package installs from a public repository.
 
 .PARAMETER Demo
     After everything is healthy, drive a full end-to-end run: real traffic to the tenant
@@ -362,7 +361,7 @@ function Test-Preflight {
         Write-Host ''
         foreach ($m in $missingSecrets) { Write-Fail ("missing {0}" -f $m) }
         Stop-WithError 'Required secret files are absent.' `
-            'Copy each alongside its .example template and fill it in. The GitHub PAT needs read access to agentic-sdlc-eventbus, which hosts the private agentic-events dependency.'
+            'Copy each alongside its .example template and fill it in. The GitHub PAT is a runtime credential for clone-per-run: it needs read access to the tenant repositories a run will clone.'
     }
     Write-Ok 'all required secret files present'
 

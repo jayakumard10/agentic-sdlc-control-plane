@@ -1,10 +1,11 @@
 name: ci
 
-# Both jobs need read access to the private agentic-sdlc-eventbus repo (the
-# agentic-events dependency). Requires a repository secret named
-# EVENTBUS_READ_PAT: a fine-grained, read-only GitHub PAT scoped to
-# agentic-sdlc-eventbus - set it under this repo's Settings > Secrets and
-# variables > Actions before this workflow will pass.
+# No repository secrets required. The agentic-events dependency lives in
+# agentic-sdlc-eventbus, which is public, so it resolves over anonymous HTTPS -
+# a fork of this repo gets a green build with nothing to configure.
+#
+# This is separate from the RUNTIME PAT the service uses to clone tenant
+# repositories. CI never performs a real clone, so it needs no real credential.
 
 on:
   push:
@@ -46,22 +47,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Configure read access to the private agentic-events dependency
-        env:
-          EVENTBUS_READ_PAT: ${{ secrets.EVENTBUS_READ_PAT }}
-        run: |
-          # Fail here, with a reason, rather than three steps later with a git
-          # error that never mentions the secret. Interpolating an unset secret
-          # writes url."https://@github.com/" - a syntactically valid rewrite with
-          # an empty credential - so pip's clone falls through to an interactive
-          # password prompt and dies with "could not read Password" on a runner
-          # that has no TTY. Nothing in that message points at the cause.
-          if [ -z "$EVENTBUS_READ_PAT" ]; then
-            echo "::error::EVENTBUS_READ_PAT is not set on this repository. It is a fine-grained, read-only PAT scoped to agentic-sdlc-eventbus, which hosts the private agentic-events dependency. Set it under Settings > Secrets and variables > Actions, or run: gh secret set EVENTBUS_READ_PAT --repo <owner>/<repo>"
-            exit 1
-          fi
-          git config --global url."https://${EVENTBUS_READ_PAT}@github.com/".insteadOf "https://github.com/"
-
       - name: Configure a git identity for the workspace tests
         # tools.git_commit_all sets a per-repo identity, but git also needs a
         # global default present on a bare runner before `git commit` will run.
@@ -73,7 +58,14 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests with coverage
-        run: pytest --cov=agentic_control_plane --cov-report=term-missing
+        # Measured 91% with the postgres service container attached (226 tests, no
+        # skips). The floor sits just under it so coverage can only ratchet up.
+        #
+        # It also catches a failure mode a bare `pytest` hides: without a reachable
+        # postgres the durability tests skip and coverage falls to 88%, so a run
+        # where the service container never came up fails here instead of passing
+        # quietly with the property those tests exist to prove left unverified.
+        run: pytest --cov=agentic_control_plane --cov-report=term-missing --cov-fail-under=90
 
       - name: Assert the platform carries no tenant-specific vocabulary
         # This repo is domain-agnostic by requirement, not by convention. Checked
@@ -100,20 +92,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Write local secret files for compose
-        env:
-          EVENTBUS_READ_PAT: ${{ secrets.EVENTBUS_READ_PAT }}
         run: |
-          # Guarded for the same reason as the test job: an empty secret would
-          # write an empty PAT file and fail later inside the docker build, where
-          # the cause is even harder to see. This job normally cannot reach here
-          # with the secret unset, since it needs the test job - but a single-job
-          # re-run can, so it checks for itself.
-          if [ -z "$EVENTBUS_READ_PAT" ]; then
-            echo "::error::EVENTBUS_READ_PAT is not set on this repository - the docker build cannot install the private agentic-events dependency without it."
-            exit 1
-          fi
+          # Both are placeholders. compose declares github_pat as a runtime secret
+          # for the consumer, so the source file must exist for the stack to be
+          # valid - but this job only builds the consumer and starts postgres, and
+          # never performs a clone, so the value is never used. A real PAT is only
+          # needed to actually run a job that clones a tenant repository.
           mkdir -p secrets
-          printf '%s' "$EVENTBUS_READ_PAT" > secrets/github_pat.txt
+          printf 'not-a-real-pat-ci-placeholder' > secrets/github_pat.txt
           printf 'ci_local_password' > secrets/postgres_password.txt
 
       - name: Start this service's own Postgres
@@ -141,8 +127,11 @@ jobs:
         run: docker compose build consumer
 
       - name: Assert the built image carries no credential
-        # The PAT is a BuildKit secret unset within its own layer. Verifying that
-        # rather than trusting it, since a leak here would ship in the image.
+        # Kept deliberately after the build-time PAT was removed. Nothing writes a
+        # credential into this image today, so this passes trivially - which is the
+        # point: it is a regression guard. This image is the one that handles a real
+        # PAT at runtime, so a build step that quietly reintroduced one would ship
+        # it, and would otherwise be caught by nobody.
         run: |
           size=$(docker run --rm agentic-sdlc-control-plane-consumer:latest \
             sh -c 'stat -c %s /root/.gitconfig 2>/dev/null || echo 0')

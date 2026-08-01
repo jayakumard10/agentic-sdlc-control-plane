@@ -392,7 +392,7 @@ construction and by policy.
 | Token in logs | Redacted from text bound for a log line, as defence in depth. |
 | Database credentials | File-based secrets via the `_FILE` convention. Credential components are percent-encoded into the connection URI, so a password containing `@` or `/` fails cleanly rather than parsing into the wrong host. |
 | Generated code | Guardrail scanning for unsafe calls, DDL statements, and secret-shaped strings, surfaced at the release gate and blocking by default. |
-| Repository visibility | All repositories private. No CI step publishes to a public registry or assumes public visibility. |
+| Repository visibility | All four platform repositories are public. Nothing in this design depends on their privacy: every credential is a mounted file-based secret, no CI job requires one, and no CI step publishes to a registry. The runtime PAT is scoped to the *tenant* repositories a run clones, which is independent of this platform's own visibility. |
 
 ---
 
@@ -403,10 +403,8 @@ only in that the event bus should exist before producers.
 
 ### 10.1 Resource footprint — measured
 
-All containers running simultaneously, measured with `docker stats` on 2026-07-26:
-
-All containers running simultaneously, re-measured on 2026-07-27 after `mlflow` was re-sized (see
-mlops ADR 0004):
+All containers running simultaneously, re-measured with `docker stats` on 2026-07-27 after
+`mlflow` was re-sized (see mlops ADR 0004):
 
 | Container | Repository | Measured | Limit | Utilisation |
 |---|---|---|---|---|
@@ -470,6 +468,15 @@ appended — see [ADR 0008](adr/0008-the-audit-trail-must-be-checkable-not-merel
 | Hash-chained JSONL file | Each record carries the SHA-256 of its predecessor. `verify_chain` reports the first record that does not hold, by line and reason. | Writable by whoever holds the volume. Truncation of the tail leaves a shorter chain that still verifies. |
 | `control-plane.audit.v1` | An independent copy, out of reach of that writer. Comparison against it is what catches truncation. | Retention is the broker's default until explicit topic provisioning lands ([§12](#12-roadmap)). |
 
+**A chain says nothing about records that were never written.** Both sinks record events per run,
+and the cursor tracking what has already been flushed is keyed by `run_id` and retired with the run
+— [ADR 0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md). When that cursor was
+process-scoped instead, every run after the first went unrecorded while `verify_chain` still
+reported `ok=True`, because the chain it checked was intact; it was simply short. The check that
+detects this class is counting records per `correlation_id` on `control-plane.audit.v1` against
+runs actually served — the topic is what makes that comparison possible, which is a second reason
+for the two-sink design beyond tamper-detection.
+
 Neither is WORM storage. Both sinks sit inside the trust boundary the platform runs in, so the
 claim is *tampering is detectable*, not *tampering is impossible*. Regulatory-grade retention means
 shipping these records somewhere the platform cannot delete its own history — object-lock storage
@@ -520,7 +527,7 @@ the position the calling component actually occupies:
 | Pattern subscription discovers a topic created after consumer startup | Pass — run began ~31 s after publish, matching the tuned 30 s `metadata.max.age.ms` |
 | Container **consumes** through the cross-container listener | Pass |
 | Container **publishes** through the cross-container listener | Pass — message consumed back off the topic, `producer.instance_id` matching the container hostname |
-| Private-repository HTTPS clone via the mounted PAT | Pass |
+| Private-repository HTTPS clone via the mounted PAT | Pass — against a repository that was private when this was run; the platform's own repositories are public now, but clone-per-run still authenticates the same way against private tenant repositories |
 | PAT lacking access to the target | Pass — degrades to `clone_failed` with the real error, no crash |
 | Gate parks without blocking the poll loop | Pass |
 | Decision from Kafka resumes the parked run | Pass |
@@ -571,3 +578,4 @@ existed.
 | [0008](adr/0008-the-audit-trail-must-be-checkable-not-merely-appended.md) | The audit trail must be checkable, not merely appended |
 | [0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md) | The audit trail does not live in the workspaces root |
 | [0010](adr/0010-durable-work-hand-off.md) | Durable work hand-off |
+| [0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md) | The audit cursor belongs to the run, not the process |

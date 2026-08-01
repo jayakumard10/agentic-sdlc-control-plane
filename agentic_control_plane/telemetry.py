@@ -189,22 +189,45 @@ class TelemetrySink:
     Tracks how many events have already been flushed so repeated calls with the
     growing `state.events` list (as LangGraph threads state through nodes) only
     ever write and render the events that are actually new.
+
+    **The flushed-count is keyed by run, and that is load-bearing.** Two kinds of
+    state live here and they have different lifetimes. The chain itself - `_seq` and
+    `_prev_hash` - is per *file*: one process appends to one trail, and those must
+    advance monotonically across every run or the chain breaks. The flushed-count is
+    per *run*: each run threads its own `GraphState` with its own `events` list that
+    starts empty.
+
+    Conflating the two silently dropped every run after the first. One sink is built
+    per process, so a single counter left over from run 1 was applied to run 2's
+    events list - `events[17:]` against a list of 17 - and wrote nothing. The run
+    completed, published its outcome, logged cleanly, and `verify_chain` reported the
+    file intact, because a chain proves record N follows N-1 and cannot detect records
+    that were never written at all. See docs/adr/0011.
     """
 
     def __init__(self, jsonl_path: Path) -> None:
         self.jsonl_path = jsonl_path
         self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-        self._emitted_count = 0
+        self._emitted_counts: dict[str, int] = {}
         self._seq, self._prev_hash = _resume_chain(jsonl_path)
 
-    def flush_new_events(self, events: list[AuditEvent]) -> list[AuditEvent]:
-        """Persist the events not yet written, and return them.
+    def forget(self, run_id: str) -> None:
+        """Drop a finished run's cursor. Called when the worker retires the run.
+
+        Without this the map grows for the life of the process. Forgetting a run that
+        is not finished would re-write its events from the start, so this belongs with
+        the worker's other terminal cleanup and nowhere else.
+        """
+        self._emitted_counts.pop(run_id, None)
+
+    def flush_new_events(self, run_id: str, events: list[AuditEvent]) -> list[AuditEvent]:
+        """Persist this run's not-yet-written events, and return them.
 
         Returns the events rather than rendered lines so the caller can decide what
         else they are for - the worker also publishes each one to Kafka, and a second
         projection of the same list is exactly what this module exists to avoid.
         """
-        new_events = events[self._emitted_count :]
+        new_events = events[self._emitted_counts.get(run_id, 0) :]
         if not new_events:
             return []
         with self.jsonl_path.open("a", encoding="utf-8") as handle:
@@ -226,5 +249,5 @@ class TelemetrySink:
                 )
                 self._seq += 1
                 self._prev_hash = digest
-        self._emitted_count = len(events)
+        self._emitted_counts[run_id] = len(events)
         return new_events
