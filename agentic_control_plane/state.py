@@ -169,7 +169,7 @@ class GraphState(BaseModel):
     # "fallback_triggered=True and test failed" is ambiguous on its own between "about
     # to try the fallback attempt" and "the fallback attempt just failed too" - the
     # node that observes the transition records which one happened, so graph.py's
-    # routing (Phase 3) never has to guess.
+    # routing never has to guess.
     route_hint: RouteHint = ""
 
     guardrail_violations: list[GuardrailViolation] = Field(default_factory=list)

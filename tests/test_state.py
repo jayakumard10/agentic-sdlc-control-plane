@@ -84,7 +84,7 @@ def test_coder_attempts_field_uses_additive_reducer():
 
 
 def test_scenario_type_is_constrained_to_the_three_literal_values():
-    """Locked decision 6: inbound events carry scenario_type and GraphState keeps
+    """Inbound events carry scenario_type, and GraphState keeps
 
     its definition as-is. An unrecognized value from a producer must fail loudly at
     the state boundary rather than flow into routing as an unhandled case.

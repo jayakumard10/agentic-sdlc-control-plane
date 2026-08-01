@@ -1,6 +1,6 @@
 """Executes a run to its next human gate, parks it, and resumes it later.
 
-This module is where locked decision 1's real work lives. The graph's gate nodes
+This module is what makes a gate a real pause rather than a blocked thread. The graph's gate nodes
 already call `interrupt()`; what did not exist was a way to answer one without
 holding a thread open. The behaviour being replaced drove gates with a synchronous
 in-process loop that read a recorded decision and immediately resumed - fine for a

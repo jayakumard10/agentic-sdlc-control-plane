@@ -1,10 +1,12 @@
 """End-to-end integration tests for the fully compiled StateGraph.
 
-Formalizes the manual verification done while building graph.py in Phase 3 into a
-permanent suite: every governance path (retry, fallback, rollback, safe-stop,
-dynamic re-planning) exercised through the real compiled graph, not just unit-level
-node calls. This is the single most important coverage in the whole test suite -
-workflow orchestration is the #1 evaluation criterion.
+Every governance path - retry, fallback, rollback, safe-stop, dynamic re-planning -
+driven through the real compiled graph rather than by calling nodes directly.
+
+Node-level tests cannot establish that routing is correct, because routing is the
+thing they stub out: a conditional edge that sends a brownfield run down the
+greenfield branch passes every node test in the suite. These drive the compiled
+graph so the edges are exercised by the same machinery that runs in production.
 """
 
 from __future__ import annotations

@@ -8,7 +8,7 @@ treats the merge as blocked whenever violations exist and the human did not
 explicitly set override_guardrails, regardless of the raw approve/reject status they
 sent. On a real approval, commits code and docs together as one real commit in the
 target app's own nested git history. On rejection, leaves the workspace uncommitted
-for graph.py's routing (Phase 3) to send to rollback.
+for graph.py's routing to send to rollback.
 """
 
 from __future__ import annotations

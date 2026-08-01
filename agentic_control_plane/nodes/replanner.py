@@ -5,7 +5,7 @@ conflict: a vague requirement whose likely planned interpretation would duplicat
 a module the workspace already contains (see that node's
 REPLANNING_CONFLICT_MARKERS). Surfaces the conflict and the initial task list at the
 replanning_approval gate, then hands control back to Decomposer/Planner
-(graph.py routes the edge, Phase 3) to regenerate the plan. Decomposer/Planner
+(graph.py routes the edge) to regenerate the plan. Decomposer/Planner
 remains the one node that actually reasons about *what tasks, in what order*;
 this node's job is strictly the human checkpoint on top of that reasoning, per the
 node-boundary rule that keeps these distinct.
