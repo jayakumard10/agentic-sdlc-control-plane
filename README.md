@@ -212,8 +212,12 @@ defined terminal state with outcome telemetry. See `docs/adr/0001`.
 pytest --cov=agentic_control_plane --cov-report=term-missing
 ```
 
-226 tests, 91% statement coverage. The durability tests need a reachable Postgres and skip without
-one; run them against the compose Postgres:
+226 tests, 91% statement coverage. CI enforces a floor of 90% (`--cov-fail-under=90`), so coverage
+can only ratchet upward — and because skipping the durability tests drops it to 88%, a CI run whose
+Postgres service container never came up fails there rather than passing quietly.
+
+The durability tests need a reachable Postgres and skip without one; run them against the compose
+Postgres:
 
 ```bash
 POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=control_plane POSTGRES_DB=control_plane pytest

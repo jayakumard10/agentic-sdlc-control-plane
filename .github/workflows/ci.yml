@@ -58,7 +58,14 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests with coverage
-        run: pytest --cov=agentic_control_plane --cov-report=term-missing
+        # Measured 91% with the postgres service container attached (226 tests, no
+        # skips). The floor sits just under it so coverage can only ratchet up.
+        #
+        # It also catches a failure mode a bare `pytest` hides: without a reachable
+        # postgres the durability tests skip and coverage falls to 88%, so a run
+        # where the service container never came up fails here instead of passing
+        # quietly with the property those tests exist to prove left unverified.
+        run: pytest --cov=agentic_control_plane --cov-report=term-missing --cov-fail-under=90
 
       - name: Assert the platform carries no tenant-specific vocabulary
         # This repo is domain-agnostic by requirement, not by convention. Checked
