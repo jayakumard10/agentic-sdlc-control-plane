@@ -313,16 +313,24 @@ That is the same code path a customised image would take; only the location of t
 pytest --cov=agentic_control_plane --cov-report=term-missing
 ```
 
-226 tests, 91% statement coverage. CI enforces a floor of 90% (`--cov-fail-under=90`), so coverage
+245 tests, 91% statement coverage. CI enforces a floor of 90% (`--cov-fail-under=90`), so coverage
 can only ratchet upward — and because skipping the durability tests drops it to 88%, a CI run whose
 Postgres service container never came up fails there rather than passing quietly.
 
 The durability tests need a reachable Postgres and skip without one; run them against the compose
-Postgres:
+Postgres. Pass the same secret file Compose gives the database — the password default in
+`_postgres_conn_string` is `control_plane`, which is deliberately not the password you were told to
+choose in Quickstart, so omitting it authenticates as the wrong user and every one of these tests
+skips rather than fails:
 
 ```bash
-POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=control_plane POSTGRES_DB=control_plane pytest
+POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=control_plane POSTGRES_DB=control_plane \
+  POSTGRES_PASSWORD_FILE=secrets/postgres_password.txt \
+  pytest --cov=agentic_control_plane --cov-report=term-missing
 ```
+
+A run that reports skips here has not exercised durability. `245 passed` with no skips is the
+whole suite; anything less means the credential did not reach Postgres.
 
 Coverage gaps are concentrated in code that needs live infrastructure to exercise meaningfully:
 real `KafkaProducer`/`KafkaConsumer` construction (`events.py`, `main.py`) and the live `claude`
