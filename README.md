@@ -313,7 +313,7 @@ That is the same code path a customised image would take; only the location of t
 pytest --cov=agentic_control_plane --cov-report=term-missing
 ```
 
-245 tests, 91% statement coverage. CI enforces a floor of 90% (`--cov-fail-under=90`), so coverage
+256 tests, 91% statement coverage. CI enforces a floor of 90% (`--cov-fail-under=90`), so coverage
 can only ratchet upward — and because skipping the durability tests drops it to 88%, a CI run whose
 Postgres service container never came up fails there rather than passing quietly.
 
@@ -329,7 +329,7 @@ POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=control_plane POSTGRES_
   pytest --cov=agentic_control_plane --cov-report=term-missing
 ```
 
-A run that reports skips here has not exercised durability. `245 passed` with no skips is the
+A run that reports skips here has not exercised durability. `256 passed` with no skips is the
 whole suite; anything less means the credential did not reach Postgres.
 
 Coverage gaps are concentrated in code that needs live infrastructure to exercise meaningfully:
