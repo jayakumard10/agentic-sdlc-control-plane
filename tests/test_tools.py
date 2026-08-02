@@ -159,3 +159,34 @@ def test_git_commit_all_logs_info_on_real_commit(tmp_path: Path, caplog: pytest.
         tools.write_code_files(tmp_path, {"app/ok.py": "x = 1\n"})
         tools.git_commit_all(tmp_path, "initial commit")
     assert any("Committed" in record.message for record in caplog.records)
+
+
+def test_a_commit_does_not_carry_the_test_runs_bytecode(tmp_path: Path):
+    """Regression, found by delivering a change instead of discarding it.
+
+    test_executor runs pytest inside the workspace, so by the time the release gate
+    commits, __pycache__ and .pytest_cache exist. `git add -A` staged them. That was
+    invisible while the commit died with the workspace; once ADR 0012 pushed the
+    commit to the tenant's repository it meant shipping compiled bytecode into
+    someone else's history.
+    """
+    workspace = tmp_path / "ws"
+    tools.write_code_files(workspace, {"svc/main.py": "x = 1\n"})
+    (workspace / "svc" / "__pycache__").mkdir(parents=True)
+    (workspace / "svc" / "__pycache__" / "main.cpython-312.pyc").write_bytes(b"\x00compiled")
+    (workspace / ".pytest_cache").mkdir()
+    (workspace / ".pytest_cache" / "CACHEDIR.TAG").write_text("x", encoding="utf-8")
+
+    tools.git_commit_all(workspace, "the approved change")
+
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=workspace, capture_output=True, text=True, check=True
+    ).stdout.split()
+
+    assert "svc/main.py" in tracked, "the actual change is committed"
+    assert not [f for f in tracked if "__pycache__" in f or f.endswith(".pyc")], (
+        f"bytecode reached the commit: {tracked}"
+    )
+    assert not [f for f in tracked if ".pytest_cache" in f], (
+        f"pytest cache reached the commit: {tracked}"
+    )

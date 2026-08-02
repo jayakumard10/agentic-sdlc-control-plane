@@ -217,7 +217,34 @@ def git_commit_all(workspace: Path, message: str) -> str:
     on an empty commit.
     """
     git_init_if_needed(workspace)
-    _run_git(workspace, "add", "-A")
+    # `git add -A` alone stages whatever the run left lying around, and test_executor
+    # has just run pytest in this workspace - so the commit picked up __pycache__ and
+    # .pytest_cache. That was invisible while the commit was discarded with the
+    # workspace; once delivery landed it in a tenant's repository (ADR 0012) it became
+    # compiled bytecode shipped into someone else's history.
+    #
+    # Excluded by pathspec rather than deleted: the platform is a guest in this
+    # workspace and removing files it did not create is a larger liberty than
+    # declining to commit them. The tenant's own .gitignore, where it has one, already
+    # covers these - this is for the repositories that do not.
+    _run_git(
+        workspace,
+        "add",
+        "-A",
+        "--",
+        ".",
+        # Both the rooted and the nested form of each: git's leading `**/` matches
+        # inside subdirectories but not at the repository root, so `**/.pytest_cache/**`
+        # alone let a top-level .pytest_cache through. Caught by the test below.
+        ":(exclude)__pycache__/**",
+        ":(exclude)**/__pycache__/**",
+        ":(exclude).pytest_cache/**",
+        ":(exclude)**/.pytest_cache/**",
+        ":(exclude)*.pyc",
+        ":(exclude)**/*.pyc",
+        ":(exclude)*.pyo",
+        ":(exclude)**/*.pyo",
+    )
     status = _run_git(workspace, "status", "--porcelain")
     if not status:
         logger.debug("git_commit_all: no changes in %s, skipping commit", workspace)
