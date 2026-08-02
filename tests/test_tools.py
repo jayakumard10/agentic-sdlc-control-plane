@@ -190,3 +190,47 @@ def test_a_commit_does_not_carry_the_test_runs_bytecode(tmp_path: Path):
     assert not [f for f in tracked if ".pytest_cache" in f], (
         f"pytest cache reached the commit: {tracked}"
     )
+
+
+def test_a_tenant_that_already_gitignores_bytecode_can_still_be_committed(tmp_path: Path):
+    """The case the test above shares an assumption with the code about.
+
+    That test builds its workspace with no `.gitignore`, so it only ever exercised a
+    repository that does not ignore bytecode - the one shape where an exclude pathspec
+    works. Nearly every real Python tenant ignores `__pycache__`, and there git treats
+    the excluded paths as explicitly named and refuses the whole `git add`:
+
+        The following paths are ignored by one of your .gitignore files
+
+    Exit 1, nothing committed, and the run reports `failed` at the release gate after
+    passing every one of its own tests. Found by running the end-to-end demo against a
+    real repository rather than a fixture. See ADR 0014.
+    """
+    workspace = tmp_path / "ws"
+    tools.write_code_files(
+        workspace,
+        {
+            "svc/main.py": "x = 1\n",
+            ".gitignore": "__pycache__/\n.pytest_cache/\n*.pyc\n",
+        },
+    )
+    (workspace / "svc" / "__pycache__").mkdir(parents=True)
+    (workspace / "svc" / "__pycache__" / "main.cpython-312.pyc").write_bytes(b"\x00compiled")
+    (workspace / ".pytest_cache").mkdir()
+    (workspace / ".pytest_cache" / "CACHEDIR.TAG").write_text("x", encoding="utf-8")
+
+    sha = tools.git_commit_all(workspace, "the approved change")
+
+    assert sha, "a tenant with a .gitignore must still reach a commit"
+
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=workspace, capture_output=True, text=True, check=True
+    ).stdout.split()
+
+    assert "svc/main.py" in tracked, "the actual change is committed"
+    assert not [f for f in tracked if "__pycache__" in f or f.endswith(".pyc")], (
+        f"bytecode reached the commit: {tracked}"
+    )
+    assert not [f for f in tracked if ".pytest_cache" in f], (
+        f"pytest cache reached the commit: {tracked}"
+    )

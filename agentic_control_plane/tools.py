@@ -223,27 +223,33 @@ def git_commit_all(workspace: Path, message: str) -> str:
     # workspace; once delivery landed it in a tenant's repository (ADR 0012) it became
     # compiled bytecode shipped into someone else's history.
     #
-    # Excluded by pathspec rather than deleted: the platform is a guest in this
-    # workspace and removing files it did not create is a larger liberty than
-    # declining to commit them. The tenant's own .gitignore, where it has one, already
-    # covers these - this is for the repositories that do not.
+    # Removed from the index rather than from disk: the platform is a guest in this
+    # workspace, and deleting files it did not create is a larger liberty than
+    # declining to commit them.
+    #
+    # Staged first and unstaged second, rather than excluded in one `git add`. An
+    # exclude pathspec makes git treat the ignored directories as explicitly named, and
+    # it then refuses the whole invocation with "paths are ignored by one of your
+    # .gitignore files" - exit 1, no commit, run reported failed. That is every tenant
+    # whose .gitignore already covers bytecode, which is nearly all of them. See
+    # ADR 0014.
+    _run_git(workspace, "add", "-A", "--", ".")
+    # Positive pathspecs here, and a no-op when none of them are staged. Both the rooted
+    # and the nested form of each: git's leading `**/` matches inside subdirectories but
+    # not at the repository root, so `**/.pytest_cache` alone leaves a top-level one.
     _run_git(
         workspace,
-        "add",
-        "-A",
+        "reset",
+        "-q",
         "--",
-        ".",
-        # Both the rooted and the nested form of each: git's leading `**/` matches
-        # inside subdirectories but not at the repository root, so `**/.pytest_cache/**`
-        # alone let a top-level .pytest_cache through. Caught by the test below.
-        ":(exclude)__pycache__/**",
-        ":(exclude)**/__pycache__/**",
-        ":(exclude).pytest_cache/**",
-        ":(exclude)**/.pytest_cache/**",
-        ":(exclude)*.pyc",
-        ":(exclude)**/*.pyc",
-        ":(exclude)*.pyo",
-        ":(exclude)**/*.pyo",
+        "__pycache__",
+        "**/__pycache__",
+        ".pytest_cache",
+        "**/.pytest_cache",
+        "*.pyc",
+        "**/*.pyc",
+        "*.pyo",
+        "**/*.pyo",
     )
     status = _run_git(workspace, "status", "--porcelain")
     if not status:
