@@ -652,3 +652,4 @@ existed.
 | [0010](adr/0010-durable-work-hand-off.md) | Durable work hand-off |
 | [0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md) | The audit cursor belongs to the run, not the process |
 | [0012](adr/0012-an-approved-change-must-outlive-the-run-that-made-it.md) | An approved change must outlive the run that made it |
+| [0013](adr/0013-liveness-is-the-workers-signal-not-the-process.md) | Liveness is the worker's signal, not the process's |
