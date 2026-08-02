@@ -92,6 +92,10 @@ def release_gate(state: GraphState, workspace: Path) -> dict:
         )
         updates["run_status"] = "completed"
         updates["finished_at"] = datetime.now(timezone.utc)
+        # Recorded in state, not only in the audit line below, so the worker can put it
+        # on the outcome event. Delivering it anywhere is the worker's job, not this
+        # node's: the graph decides whether to release, the worker knows the remote.
+        updates["commit_sha_after"] = commit_sha
         events.append(
             AuditEvent(
                 node="release_gate",

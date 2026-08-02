@@ -140,6 +140,11 @@ class GraphState(BaseModel):
     mode: OrchestratorMode = "replay"
     fixture_id: str | None = None
     run_status: RunStatus = "running"
+    # The commit the release gate produced, set only on an approved merge. Distinct
+    # from CoderOutput.commit_sha_before, which is the revision the run started from
+    # and the one a rollback reverts to. Without it a completed run reported only
+    # where it began and nothing about what it produced - see ADR 0012.
+    commit_sha_after: str | None = None
 
     requirement_raw: str = ""
     requirement_clarified: str = ""

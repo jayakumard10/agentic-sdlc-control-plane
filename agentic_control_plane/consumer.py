@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 
 from agentic_events import EventEnvelope
 
-from agentic_control_plane import events, runner, workspace
+from agentic_control_plane import events, publish, runner, workspace
 from agentic_control_plane.inbox import payload_of
 from agentic_control_plane.state import GraphState
 from agentic_control_plane.telemetry import TelemetrySink, render_console_line
@@ -468,7 +468,14 @@ class Worker:
                 events.GATE_DECISION_TOPIC,
             )
             return
-        self._publish_outcome(run_id, result.terminal_state or "failed", detail=result.detail)
+        # Delivery first: cleanup below removes the workspace holding the commit.
+        delivery = self._deliver_if_completed(run_id, result)
+        self._publish_outcome(
+            run_id,
+            result.terminal_state or "failed",
+            detail=result.detail,
+            extra_payload=delivery,
+        )
         workspace.cleanup(run_id)
 
     def _record_audit(self, result: runner.RunResult) -> None:
@@ -527,7 +534,44 @@ class Worker:
             except Exception:
                 logger.exception("failed to publish an audit event; continuing")
 
-    def _publish_outcome(self, run_id: str, terminal_state: str, detail: str) -> None:
+    def _deliver_if_completed(self, run_id: str, result: runner.RunResult) -> dict:
+        """Publish an approved change, and report what happened to it.
+
+        Runs between the terminal state and workspace cleanup, which is the only
+        window where the commit still exists on disk. Only a `completed` run has
+        anything to deliver: every other terminal state either produced no commit or
+        produced one the gate rejected.
+
+        Returns the fields the outcome event should carry. Never raises - a delivery
+        failure is reported on the event, not turned into a failed run, because the
+        change was generated, tested and approved regardless of whether the push
+        landed. See docs/adr/0012.
+        """
+        payload: dict = {}
+        commit_sha_after = (result.values or {}).get("commit_sha_after")
+        if commit_sha_after:
+            payload["commit_sha_after"] = commit_sha_after
+        if result.terminal_state != "completed":
+            return payload
+
+        target = self._targets.get(run_id)
+        if target is None:
+            logger.warning("Run %s completed with no target on record; not publishing", run_id)
+            return payload
+
+        outcome = publish.publish_change(
+            workspace=workspace.workspace_for(run_id),
+            run_id=run_id,
+            repo_url=target.repo_url,
+            base_branch=target.branch,
+            requirement=(result.values or {}).get("requirement_clarified", ""),
+        )
+        payload.update(outcome.as_payload())
+        return payload
+
+    def _publish_outcome(
+        self, run_id: str, terminal_state: str, detail: str, extra_payload: dict | None = None
+    ) -> None:
         """Read the target from the run's record rather than taking it as arguments.
 
         The commit SHA used to be threaded through the call chain, which lost it for
@@ -544,6 +588,7 @@ class Worker:
             branch=target.branch,
             commit_sha=target.commit_sha_before,
             detail=detail,
+            extra_payload=extra_payload,
         )
         events.publish_run_outcome(envelope)
         self._targets.pop(run_id, None)
