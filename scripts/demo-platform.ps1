@@ -26,9 +26,11 @@
          demo convenience. In production, auto-creation plus the metadata refresh handles it,
          and the 30s is irrelevant because nothing is watching.
 
-    Each stage waits on the strongest signal the service actually exposes: container health
-    where a healthcheck exists, and a specific readiness line in the logs for the two consumer
-    services that have none.
+    Each stage waits on the strongest signal the service actually exposes. Every container now
+    reports health, so that is always one of them. The two consumer services additionally wait
+    on a readiness line in their logs, because their healthcheck and their log line prove
+    different things: the healthcheck says the background loop is alive, the log line says the
+    Kafka client has joined its group and can actually receive. Neither implies the other.
 
 .PARAMETER Root
     Directory containing all four repository folders. Defaults to the parent of this repository.
@@ -121,7 +123,13 @@ $PlatformTopics = @(
 
 # Stage table. Each service declares how to know it is actually ready, not merely started.
 #   Health : wait for the container's own healthcheck to report healthy
-#   Log    : wait for a regex to appear in the container's logs (services with no healthcheck)
+#   Log    : wait for a regex to appear in the container's logs
+#
+# The two are not interchangeable and the consumer services wait on both. A healthcheck here
+# reports that the service's background loop is turning; a log line reports that its Kafka
+# client has joined a group and can receive. A container can satisfy either while failing the
+# other, so taking one as evidence of the other is how a demo starts against a service that
+# cannot yet hear it.
 $Stages = @(
     @{
         Name  = 'agentic-sdlc-eventbus'
@@ -146,8 +154,10 @@ $Stages = @(
         Why   = 'Drift detection. Consumes telemetry, publishes drift events.'
         Waits = @(
             @{ Container = 'agentic-sdlc-mlops-mlflow';   Kind = 'Health' },
-            # No healthcheck on this container: gate on the Kafka client reporting a completed
-            # group join instead, which is the point at which it can actually receive anything.
+            # Health says the drift-check loop is alive (docs/adr/0008 in that repo). It says
+            # nothing about ingestion, so the group join is still waited on separately - that
+            # is the point at which this service can actually receive anything.
+            @{ Container = 'agentic-sdlc-mlops-consumer'; Kind = 'Health' },
             @{ Container = 'agentic-sdlc-mlops-consumer'; Kind = 'Log'
                Pattern = 'Successfully joined group|Subscribing to pattern' }
         )
@@ -158,7 +168,10 @@ $Stages = @(
         Why   = 'Orchestrator. Consumes drift events, runs the governed workflow, gates on a human.'
         Waits = @(
             @{ Container = 'agentic-sdlc-control-plane-postgres'; Kind = 'Health' },
-            # This one logs an explicit readiness line of its own.
+            # Health says the worker thread is turning (docs/adr/0013). The readiness line says
+            # the trigger poll loop is subscribed. A run needs both: one to accept the work, the
+            # other to execute it.
+            @{ Container = 'agentic-sdlc-control-plane-consumer'; Kind = 'Health' },
             @{ Container = 'agentic-sdlc-control-plane-consumer'; Kind = 'Log'
                Pattern = 'Control plane ready' }
         )
@@ -413,8 +426,14 @@ function Invoke-Down {
 
 function Show-Status {
     Write-Banner 'PLATFORM STATUS'
+    # Deduplicated: a container may declare more than one readiness signal (health *and* a log
+    # line), and it is still one container to report on.
     $names = @()
-    foreach ($stage in $Stages) { foreach ($w in $stage.Waits) { $names += $w.Container } }
+    foreach ($stage in $Stages) {
+        foreach ($w in $stage.Waits) {
+            if ($names -notcontains $w.Container) { $names += $w.Container }
+        }
+    }
     Write-Host ''
     Write-Host ("  {0,-44} {1,-12} {2}" -f 'CONTAINER', 'STATE', 'HEALTH') -ForegroundColor White
     Write-Host ("  {0}" -f ('-' * 72)) -ForegroundColor DarkGray
