@@ -53,6 +53,10 @@ services:
       PUBLISH_MODE: none
       PARKED_RUN_TTL_HOURS: "24"
       LOG_LEVEL: INFO
+      # Written by the worker loop on every pass. The process being up says nothing
+      # about the worker inside it still turning - see docs/adr/0013.
+      HEARTBEAT_PATH: /var/run/agentic/worker.heartbeat
+      HEARTBEAT_MAX_AGE_SECONDS: "300"
     extra_hosts:
       # Linux hosts do not resolve host.docker.internal by default; Docker Desktop
       # does. Declared so the same file works on both.
@@ -64,6 +68,17 @@ services:
       # deletes orphaned run workspaces under that root, and an audit trail living
       # there was swept on every restart - see docs/adr/0009.
       - audit:/var/audit
+    healthcheck:
+      # Asks the worker loop whether it is still turning, rather than asking the OS
+      # whether the process exists. A dead worker inside a live process is the failure
+      # this catches, and the one a process check reports as healthy.
+      test: ["CMD-SHELL", "python -m agentic_control_plane.heartbeat || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # The first pass lands within a second of the worker starting, but the
+      # checkpointer, reconciliation and inbox restore all run before that.
+      start_period: 60s
     mem_limit: 1g
     restart: unless-stopped
 

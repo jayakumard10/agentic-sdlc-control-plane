@@ -176,10 +176,17 @@ def _open_pull_request(repo_url: str, head: str, base: str, title: str, body: st
         with urllib.request.urlopen(request, timeout=_API_TIMEOUT_SECONDS) as response:
             return json.load(response).get("html_url", "")
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:300]
+        # Redacted for the same reason the push path is: this string does not stop at
+        # a log line. It becomes PublishResult.error, which the run-outcome event
+        # carries onto Kafka, where it is durable and readable by every consumer. A
+        # response body or a URL echoed back by an intermediary is not somewhere the
+        # token is expected to appear, which is exactly why it is worth stripping.
+        detail = _redact(exc.read().decode("utf-8", "replace"))[:300]
         raise PublishError(f"GitHub returned {exc.code} opening the pull request: {detail}") from exc
     except Exception as exc:  # noqa: BLE001 - reported, never raised onward
-        raise PublishError(f"could not reach GitHub to open the pull request: {exc}") from exc
+        raise PublishError(
+            f"could not reach GitHub to open the pull request: {_redact(str(exc))}"
+        ) from exc
 
 
 def publish_change(

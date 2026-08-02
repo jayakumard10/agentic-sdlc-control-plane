@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 
 from agentic_events import EventEnvelope
 
-from agentic_control_plane import events, publish, runner, workspace
+from agentic_control_plane import events, heartbeat, publish, runner, workspace
 from agentic_control_plane.inbox import payload_of
 from agentic_control_plane.state import GraphState
 from agentic_control_plane.telemetry import TelemetrySink, render_console_line
@@ -600,6 +600,9 @@ class Worker:
 
     def run_forever(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():
+            # Every pass, idle included: an idle worker and a dead one are the same
+            # shape from outside, and only this tells them apart.
+            heartbeat.touch()
             try:
                 work = self.queue.get(timeout=1.0)
             except queue.Empty:
