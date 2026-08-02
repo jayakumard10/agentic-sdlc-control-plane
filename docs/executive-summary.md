@@ -103,7 +103,7 @@ author expected. Running the real system proves the system works.** Both are rep
 
 | Evidence | Result |
 |---|---|
-| Automated tests | **298** across four repositories; 91% statement coverage in the control plane |
+| Automated tests | **340** across four repositories; 91% statement coverage in the control plane |
 | Continuous integration | Observed passing on all four repositories — a pipeline file is not treated as evidence |
 | A paused change resumed by a **different process** after the original was killed | Verified |
 | Work accepted from the message bus survives the process that accepted it | Verified — 12 unfinished items recovered after the container was killed mid-work |

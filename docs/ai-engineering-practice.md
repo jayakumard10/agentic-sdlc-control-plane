@@ -54,9 +54,9 @@ produced by running the thing, not by reasoning about it.
 
 ## 3. The measured result
 
-**Sixteen of the platform's twenty-one ADRs document defects found only by running real
-infrastructure, or by reading the code path an external reviewer pointed at.** The other four
-record design decisions. Every one of the sixteen shares a property: a green unit suite was
+**Seventeen of the platform's twenty-four ADRs document defects found only by running real
+infrastructure, or by reading the code path an external reviewer pointed at.** The other seven
+record design decisions. Every one of the seventeen shares a property: a green unit suite was
 passing at the time, and no reasonable addition to it would have caught the defect.
 
 | ADR | Repository | Defect | Found by |
@@ -77,6 +77,7 @@ passing at the time, and no reasonable addition to it would have caught the defe
 | `0001` | eventbus | Cross-container traffic silently failed — bootstrap succeeded, then the client was told to reconnect to `localhost` | Container-to-container traffic, in both directions |
 | `0001` | url-shortener | `KafkaProducer` construction blocked every HTTP request indefinitely when the broker was down | Running the real stack with the broker deliberately stopped |
 | [0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md) | control-plane | Only the **first** run after a process start was audited. The sink's flushed-count was per process while each run's event list is per run, so run 2 was sliced from run 1's high-water mark and wrote nothing | Driving two real runs against one container and reading the trail afterwards — the run completed, published its outcome, logged cleanly, and `verify_chain` returned `ok=True` |
+| [0014](adr/0014-stage-then-unstage-rather-than-exclude.md) | control-plane | The release gate could not commit in **any repository whose `.gitignore` already covers bytecode** — nearly every Python repo. An exclude pathspec makes git treat those directories as explicitly named and refuse the whole `git add`, so the run reported `failed` after passing its human gate | Running the end-to-end demo against a real repository. The regression test that was supposed to cover this builds its workspace with no `.gitignore`, so it only ever exercised the one shape where excluding works |
 
 Three further defects were found the same way and fixed without a dedicated ADR: outcome events
 carried a null `commit_sha` because the value was captured at clone time but read on a later slice;
@@ -124,7 +125,7 @@ verification rather than instead of it.
 
 ## 4. What this means in practice
 
-The rules the nine defects produced, each now applied platform-wide:
+The rules those defects produced, each now applied platform-wide:
 
 1. **Where a boundary translates between two schemas, at least one test asserts against the
    destination model** — not against what the parser happens to emit (ADR 0002).
@@ -149,10 +150,20 @@ The rules the nine defects produced, each now applied platform-wide:
    catches a whole class the suite is structurally blind to: every audit test built one worker and
    ran one run, so the fixtures encoded the same assumption the code did.
 
+8. **Where the *tenant's* configuration decides which branch runs, at least one test supplies that
+   configuration** (ADR 0014). A fixture built by the platform's own helpers inherits the
+   platform's assumptions: the bytecode-exclusion test constructed a workspace with no
+   `.gitignore`, so it exercised only the repositories that do not have one — while the defect
+   lived exclusively in the repositories that do. The test passed, was written specifically for
+   that code, and was evidence about a case that barely occurs in practice.
+
 Rule 5 is the one with the widest reach, and the platform's remaining known gap sits against it:
 the drift-detection path is exercised from a published event onward, but the producing side has not
 yet been driven from seeded telemetry through to a published `drift-detected` event. That is stated
 in the roadmap rather than left for a reviewer to discover.
+
+Rule 8 is the newest and was the most expensive: it cost a shipped release gate that could not
+commit on any realistic tenant, found by running the demo rather than by any test.
 
 ---
 
@@ -163,8 +174,9 @@ Stated so the claim is not read as broader than it is:
 - **It does not verify correctness of generated code.** It verifies that the platform behaves as
   documented. Code produced *by* a run is governed separately — guardrail scanning at the release
   gate, and a human approval that blocks by default.
-- **It found defects; it does not prove absence of defects.** Nine is the count found, not the
-  count that exists.
+- **It found defects; it does not prove absence of defects.** Seventeen is the count found, not
+  the count that exists — and the most recent of them sat in a shipped release gate for a day
+  behind a passing test written specifically to cover it.
 - **The methodology is manual.** Functional verification is a run and a recorded result table, not
   an automated harness. Automating it — a seeded end-to-end integration test in CI — is a roadmap
   item, and until it exists these results are reproducible by following the documented steps rather
