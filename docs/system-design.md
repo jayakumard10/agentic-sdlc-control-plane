@@ -530,6 +530,29 @@ claim is *tampering is detectable*, not *tampering is impossible*. Regulatory-gr
 shipping these records somewhere the platform cannot delete its own history — object-lock storage
 or a SIEM — which is not built.
 
+**The chain assumes a single writer, and that is what bounds this service to one instance.**
+`TelemetrySink` holds the chain head — the next sequence number and the previous record's digest —
+as process state, and appends without a file lock. That is sound for the process structure in
+[§6.1](#61-process-structure), where one single-threaded worker owns the trail, and it is the
+constraint to check first before running a second instance:
+
+| Deployment | What happens to the trail |
+|---|---|
+| One instance (what is built) | One writer, one chain, `verify_chain` meaningful end to end. |
+| Two instances, shared audit volume | Both hold their own chain head and interleave appends. Sequence numbers collide and `prev_hash` stops matching, so the trail fails verification for a reason that is not tampering — the worst outcome available, because it makes a real alert indistinguishable from noise. |
+| Two instances, separate volumes | Two internally valid chains with no ordering between them. Neither is the audit trail; the union of them is, and nothing reconstructs it. |
+
+Scaling out is otherwise unobstructed — the trigger consumer is already in a Kafka consumer group,
+so a second instance would be handed a partition and start work without any other change. The audit
+trail is the thing that would break quietly, so it is stated here rather than discovered.
+
+Two ways forward, neither built. Segment the chain per instance — carry the instance id in each
+record and verify per segment, which keeps the file sink and gives up a single global order. Or
+treat `control-plane.audit.v1` as the ordering authority and demote the file to a local cache,
+which is the direction the two-sink design already leans, since the topic is the copy the writer
+cannot reach. The choice depends on whether a total order across instances is worth a broker
+dependency in the verification path; at one instance it is not, which is why neither exists yet.
+
 ### 10.4 Code generation availability
 
 Neither generation mode is available in the shipped image, by design:
@@ -607,6 +630,7 @@ existed.
 | Outcome feedback loop (correlating a run's outcome back to the drift that triggered it) | **Planned** — the contract supports it; no consumer implemented. |
 | Durable work hand-off | **Built** — [ADR 0010](adr/0010-durable-work-hand-off.md). Work is recorded in Postgres before it is queued and restored at startup, closing the loss window in [ADR 0005](adr/0005-single-threaded-worker-and-when-offsets-commit.md). |
 | Parallel run execution | **Planned** — a worker pool, each with its own checkpointer. Bounded change; not needed at current volume. |
+| Audit chain across more than one instance | **Planned** — the chain head is process state written without a lock, so a second instance either corrupts a shared trail or splits it in two ([§10.3](#audit-integrity)). Nothing else blocks scaling out, which is why it is written down: the consumer group would hand a second instance work immediately. |
 | Explicit topic provisioning | **Planned** — auto-creation is unacceptable at real-cluster scale: a producer typo silently creates a junk topic, every topic inherits one-size-fits-all defaults, and any authenticated producer can create unbounded topics. Replace with CI-managed or Terraform-managed manifests carrying deliberate partition, replication, retention, and ACL settings. |
 | Multi-tenancy | **Planned** — the envelope carries `tenant`; nothing consumes it yet. |
 
