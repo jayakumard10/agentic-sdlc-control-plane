@@ -143,8 +143,9 @@ discovered within about 30 seconds, governed by `metadata.max.age.ms`.
 This service does something observable only when the rest of the platform is producing events.
 [`scripts/demo-platform.ps1`](scripts/demo-platform.ps1) brings all four repositories up in
 dependency order, waiting on a real readiness signal between stages rather than a fixed sleep —
-container health where a healthcheck exists, a specific log line for the two consumer services
-that have none.
+container health, or a specific log line where a stage needs a readiness condition narrower than
+"the worker is turning". Every container in the platform now reports health, the two consumer
+services included — see [`docs/adr/0013`](docs/adr/0013-liveness-is-the-workers-signal-not-the-process.md).
 
 It requires all four repositories checked out side by side. That is a prerequisite of the script
 only: each repository still starts on its own, and no compose file references another.
