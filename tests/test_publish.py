@@ -265,6 +265,85 @@ def test_a_github_error_response_carries_its_reason(monkeypatch: pytest.MonkeyPa
         )
 
 
+def test_a_github_error_body_cannot_carry_the_token_onto_the_event(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """This reason does not stop at a log line.
+
+    It becomes PublishResult.error, which the run-outcome event carries onto Kafka -
+    durable, and readable by every consumer of the topic. The push path has always
+    been redacted; this one was not, and it is the path that quotes bytes chosen by
+    whatever answered the request.
+    """
+    monkeypatch.setenv("GIT_PAT", "ghp_supersecret")
+
+    def fake_urlopen(request, timeout=None):
+        raise publish.urllib.error.HTTPError(
+            request.full_url,
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(b'{"message":"bad credentials: ghp_supersecret"}'),
+        )
+
+    monkeypatch.setattr(publish.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(publish.PublishError) as caught:
+        publish._open_pull_request(
+            repo_url="https://github.com/o/r.git", head="h", base="main", title="t", body="b"
+        )
+
+    assert "ghp_supersecret" not in str(caught.value)
+    assert "***" in str(caught.value)
+
+
+def test_a_transport_failure_reaching_github_is_redacted_too(monkeypatch: pytest.MonkeyPatch):
+    """The catch-all path quotes the exception, and a URL is a place a token lands."""
+    monkeypatch.setenv("GIT_PAT", "ghp_supersecret")
+
+    def fake_urlopen(request, timeout=None):
+        raise OSError("tunnel failed for https://ghp_supersecret@api.github.com")
+
+    monkeypatch.setattr(publish.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(publish.PublishError) as caught:
+        publish._open_pull_request(
+            repo_url="https://github.com/o/r.git", head="h", base="main", title="t", body="b"
+        )
+
+    assert "ghp_supersecret" not in str(caught.value)
+    assert "***" in str(caught.value)
+
+
+def test_a_push_that_hangs_is_bounded_and_reported(
+    run_workspace: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A push that never returns must not hold the worker.
+
+    The worker is single-threaded, so a git push with no timeout parks every other
+    run behind it for as long as the remote stays silent. The timeout is the only
+    thing that ends that, and a run whose delivery timed out is still a completed
+    run that reports what happened.
+    """
+    monkeypatch.setenv("PUBLISH_MODE", "branch")
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, publish._PUSH_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(publish.subprocess, "run", fake_run)
+
+    result = publish.publish_change(
+        workspace=run_workspace,
+        run_id="run-1",
+        repo_url="https://github.com/o/r.git",
+        base_branch="main",
+        requirement="add a thing",
+    )
+
+    assert result.published is False
+    assert "timed out" in result.as_payload()["publish_error"]
+
+
 def test_pull_request_mode_on_a_non_github_remote_still_delivers_the_branch(
     run_workspace: Path, origin: Path, monkeypatch: pytest.MonkeyPatch
 ):
