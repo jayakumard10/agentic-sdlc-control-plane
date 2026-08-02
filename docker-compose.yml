@@ -46,6 +46,11 @@ services:
       # that root and deleted this on every restart. See docs/adr/0009.
       AUDIT_LOG_PATH: /var/audit/runs.jsonl
       ORCHESTRATOR_MODE: replay
+      # none | branch | pull_request. Default none: an approved change is committed in
+      # the run's workspace and reported, but not pushed. Anything else needs the
+      # mounted PAT to be write-scoped, which is a deliberate widening of what a
+      # compromised control plane can reach - see docs/adr/0012.
+      PUBLISH_MODE: none
       PARKED_RUN_TTL_HOURS: "24"
       LOG_LEVEL: INFO
     extra_hosts:

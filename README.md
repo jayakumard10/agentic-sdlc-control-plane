@@ -264,9 +264,29 @@ Configuration:
 | `WORKSPACES_ROOT` | `/workspaces` | Where per-run clones live |
 | `FIXTURES_DIR` | `/fixtures` | Replay-mode fixtures. Empty unless you mount your own — see below. |
 | `ORCHESTRATOR_MODE` | `replay` | `live` requires a `claude` CLI this image does not install |
+| `PUBLISH_MODE` | `none` | `none` / `branch` / `pull_request`. What happens to an approved change. Anything but `none` needs a **write-scoped** PAT — see [ADR 0012](docs/adr/0012-an-approved-change-must-outlive-the-run-that-made-it.md) |
 | `PARKED_RUN_TTL_HOURS` | `24` | After this, a parked run is reported `stale` and cleaned up |
 | `REPLANNING_CONFLICT_MARKERS` | *(empty)* | Comma-separated module names that count as an existing-functionality conflict |
 | `AUDIT_LOG_PATH` | `/var/audit/runs.jsonl` | Hash-chained audit trail of every node execution and gate decision. Verify with `verify_chain`. |
+
+### What happens to an approved change
+
+A completed run's commit is delivered before its workspace is reclaimed — that window is the only
+point at which it still exists on disk.
+
+| `PUBLISH_MODE` | Behaviour |
+|---|---|
+| `none` *(default)* | Commit and report. Governance without delivery, and the PAT stays read-only |
+| `branch` | Push `agentic-patch/{run_id}`. Works against any git host |
+| `pull_request` | Push, then open a request against **the branch the run cloned**. GitHub only; elsewhere the branch still lands and the reason is reported |
+
+The push names `HEAD:refs/heads/agentic-patch/{run_id}` explicitly, so nothing here can write to the
+branch the run cloned. The outcome event carries `commit_sha_after`, `published`, the branch, a
+`pull_request_url` where there is one, and `publish_error` where delivery failed.
+
+A delivery failure does not fail the run — the change was generated, tested and approved either way
+— but it is reported on the outcome event, because a failed push means the change was discarded.
+See [ADR 0012](docs/adr/0012-an-approved-change-must-outlive-the-run-that-made-it.md).
 
 ### Code generation modes
 
@@ -332,6 +352,8 @@ Run end-to-end against a real broker and a real Postgres, from inside the contai
 | **`ORCHESTRATOR_MODE=live`: real generation via the `claude` CLI** | PASS — 2026-08-01, coder generated 2 file(s) in 111 875 ms, `test_executor` passed a real pytest against them in 1 609 ms, 0 guardrail findings, commit `9251028d`, `completed` |
 | The same sequence run from a **Linux** shell | PASS — driven from a Linux container against the same daemon, twice, both to `completed` (commits `26c3575a`, `65d809f5`) |
 | **Every run is audited, not only the first** | PASS after ADR 0011 — two consecutive runs on a fresh audit volume recorded **17 records each** on `control-plane.audit.v1`, one continuous 34-record chain. Before the fix, the second run recorded **zero** despite completing |
+| **`PUBLISH_MODE=branch`: an approved change reaches the tenant repository** | PASS — 2026-08-01, in-container run pushed `agentic-patch/clean-1785628701` at `b0d47320`; the outcome event carried `commit_sha_after`, `published: true` and the branch. `main` untouched |
+| The delivered branch carries the change and nothing else | PASS — after excluding build artefacts: 3 files (module, its test, the generated doc). The first delivery before that fix carried 4 `.pyc` files |
 | Hash-chained audit trail | PASS — `verify_chain` clean over all 34 records, and continuous across a container restart |
 | An empty `event_id` is rejected rather than acted on | PASS — envelope validation routed it to the DLQ; the parked run was untouched and resumed normally once a valid decision arrived |
 

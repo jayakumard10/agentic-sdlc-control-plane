@@ -54,7 +54,7 @@ produced by running the thing, not by reasoning about it.
 
 ## 3. The measured result
 
-**Sixteen of the platform's twenty ADRs document defects found only by running real
+**Sixteen of the platform's twenty-one ADRs document defects found only by running real
 infrastructure, or by reading the code path an external reviewer pointed at.** The other four
 record design decisions. Every one of the sixteen shares a property: a green unit suite was
 passing at the time, and no reasonable addition to it would have caught the defect.
@@ -78,9 +78,19 @@ passing at the time, and no reasonable addition to it would have caught the defe
 | `0001` | url-shortener | `KafkaProducer` construction blocked every HTTP request indefinitely when the broker was down | Running the real stack with the broker deliberately stopped |
 | [0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md) | control-plane | Only the **first** run after a process start was audited. The sink's flushed-count was per process while each run's event list is per run, so run 2 was sliced from run 1's high-water mark and wrote nothing | Driving two real runs against one container and reading the trail afterwards — the run completed, published its outcome, logged cleanly, and `verify_chain` returned `ok=True` |
 
-Two further defects were found the same way and fixed without a dedicated ADR: outcome events
-carried a null `commit_sha` because the value was captured at clone time but read on a later slice,
-and CI had never passed on two repositories because a required secret was unset.
+Three further defects were found the same way and fixed without a dedicated ADR: outcome events
+carried a null `commit_sha` because the value was captured at clone time but read on a later slice;
+CI had never passed on two repositories because a required secret was unset; and every commit a run
+produced carried the test run's own `__pycache__`, because `git_commit_all` used `git add -A` and
+`test_executor` runs pytest in the workspace immediately before the release gate commits.
+
+The last of those is worth a sentence, because it is a defect that **only became observable once
+the platform stopped throwing its output away**. While an approved commit died with its workspace,
+committing bytecode alongside the change cost nothing and nobody could see it. The first delivery
+under [ADR 0012](adr/0012-an-approved-change-must-outlive-the-run-that-made-it.md) pushed four
+`.pyc` files into a tenant repository, where it is somebody else's history. Closing an output loop
+does not only add capability; it makes every prior sloppiness in that output visible for the first
+time.
 
 ### Why the test suite could not have caught these
 

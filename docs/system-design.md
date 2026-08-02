@@ -318,6 +318,27 @@ heard of (a crash between clone and first checkpoint) falls on the delete side b
 than through a case someone has to remember to add. A run that is parked is never touched, and a
 workspace the checkpointer cannot be queried about is kept.
 
+### 6.6 Delivering an approved change
+
+A completed run's commit is delivered before the workspace is reclaimed — that window is the only
+point at which it still exists on disk. `PUBLISH_MODE` selects what happens, and defaults to
+`none`, because pushing requires a write-scoped credential this service otherwise does not need
+([ADR 0012](adr/0012-an-approved-change-must-outlive-the-run-that-made-it.md)).
+
+| Mode | Behaviour |
+|---|---|
+| `none` *(default)* | Commit and report. Governance without delivery; the PAT stays read-only |
+| `branch` | Push `agentic-patch/{run_id}`. Any git host |
+| `pull_request` | Push, then open a request against **the branch the run cloned**. GitHub only; degrades to `branch` with a stated reason elsewhere |
+
+The push names `HEAD:refs/heads/agentic-patch/{run_id}` explicitly, so nothing in this path can
+write to the tenant's integration branch. The outcome event reports `commit_sha_after`, `published`,
+the branch, the pull-request URL where there is one, and `publish_error` where delivery failed.
+
+A delivery failure does not fail the run: the change was generated, tested and approved regardless.
+It is reported on the outcome event instead, because a failed push means the change was discarded
+and that must be visible without being misreported as a rejected release.
+
 ---
 
 ## 7. Runtime flow
@@ -411,7 +432,7 @@ is the change that matters — not the choice of analytics store.
 
 | Concern | Control |
 |---|---|
-| Repository access | Fine-grained, **read-only** PAT. Scope must cover the repositories a run will clone. |
+| Repository access | Fine-grained, **read-only** PAT by default. Scope must cover the repositories a run will clone. Enabling `PUBLISH_MODE` (§6.6) requires a **write-scoped** token, which widens a compromise from *read the tenant's code* to *write branches in the tenant's repository* — the reason delivery is opt-in rather than default, see ADR 0012. Even then, the push names a `agentic-patch/*` ref explicitly and cannot write the tenant's integration branch. |
 | Token in transit to git | Supplied by a credential helper invoked at request time. Never in the remote URL, never in `git remote -v`, never in `.git/config`, never in the process argument list. |
 | Token at rest | Mounted as a Docker file-based secret, not a compose environment value — an environment value is readable via `docker inspect`. |
 | Token in build artefacts | Injected as a BuildKit secret and unset within the same layer. **Verified, not assumed**: CI asserts `/root/.gitconfig` is 0 bytes in the built image. |
@@ -469,6 +490,7 @@ Control plane, by environment variable:
 | `PARKED_RUN_TTL_HOURS` | `24` | Parked-run expiry |
 | `REPLANNING_CONFLICT_MARKERS` | *(empty)* | Module names counting as an existing-functionality conflict |
 | `AUDIT_LOG_PATH` | `/var/audit/runs.jsonl` | Hash-chained audit trail. Outside the workspaces root deliberately — see ADR 0009. |
+| `PUBLISH_MODE` | `none` | `none` / `branch` / `pull_request`. Anything but `none` needs a **write-scoped** PAT — see [§6.6](#66-delivering-an-approved-change) and ADR 0012. |
 
 ### 10.3 Observability and audit
 
@@ -605,3 +627,4 @@ existed.
 | [0009](adr/0009-the-audit-trail-does-not-live-in-the-workspaces-root.md) | The audit trail does not live in the workspaces root |
 | [0010](adr/0010-durable-work-hand-off.md) | Durable work hand-off |
 | [0011](adr/0011-the-audit-cursor-belongs-to-the-run-not-the-process.md) | The audit cursor belongs to the run, not the process |
+| [0012](adr/0012-an-approved-change-must-outlive-the-run-that-made-it.md) | An approved change must outlive the run that made it |

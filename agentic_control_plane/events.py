@@ -97,6 +97,7 @@ def build_run_outcome(
     commit_sha: str | None,
     detail: str = "",
     metrics: dict | None = None,
+    extra_payload: dict | None = None,
 ) -> EventEnvelope:
     """The envelope reporting how a run ended.
 
@@ -114,7 +115,11 @@ def build_run_outcome(
         git_target=GitTarget(repo_url=repo_url, branch=branch, commit_sha=commit_sha),
         scenario_type=scenario_type,
         metrics=metrics or {},
-        payload={"terminal_state": terminal_state, "detail": detail},
+        # `git_target.commit_sha` stays the clone-time revision, because that is what
+        # the shared contract means by it and every consumer already reads it that way.
+        # What the run *produced*, and where it went, ride in the free-form payload -
+        # so reporting delivery does not version the envelope every repo installs.
+        payload={"terminal_state": terminal_state, "detail": detail, **(extra_payload or {})},
     )
 
 

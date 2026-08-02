@@ -16,7 +16,9 @@ from uuid import uuid4
 
 import pytest
 
-from agentic_control_plane import consumer, events, runner, tools, workspace
+import subprocess
+
+from agentic_control_plane import consumer, events, publish, runner, tools, workspace
 from agentic_control_plane.checkpointer import build_memory_checkpointer
 from agentic_control_plane.telemetry import TelemetrySink, verify_chain
 
@@ -747,6 +749,107 @@ def test_the_outcome_carries_the_commit_captured_at_clone_time(
 
     assert outcomes[-1].payload["terminal_state"] == "completed"
     assert outcomes[-1].git_target.commit_sha == origin_head
+
+
+def _brownfield_fixture(worker_env: Path) -> None:
+    (worker_env / "fixtures" / "brownfield").mkdir(parents=True, exist_ok=True)
+    (worker_env / "fixtures" / "brownfield" / "transcript.json").write_text(
+        json.dumps(
+            {
+                "scenario_type": "brownfield",
+                "attempts": [
+                    {"attempt_number": 1, "code_files": {"svc/added.py": "x = 1\n"}, "rationale": "ok"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _drive_to_completion(worker, checkpointer, run_id: str, origin: Path) -> None:
+    worker.handle_trigger(consumer.TriggerWork(run_id, "brownfield", str(origin), "main", "fix it"))
+    while runner.is_resumable(run_id, checkpointer):
+        worker.handle_decision(
+            consumer.DecisionWork(run_id, {"status": "approved", "decided_by": "human"})
+        )
+
+
+def test_the_outcome_reports_the_commit_the_run_produced(
+    worker_env: Path, origin: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The run's own output must be identifiable, not only where it started.
+
+    The outcome reported commit_sha_before and nothing else, so a completed run named
+    the revision it began at and said nothing about what it made. The commit existed
+    for the length of the run and was deleted with the workspace - see docs/adr/0012.
+    """
+    outcomes = _published(monkeypatch)
+    _brownfield_fixture(worker_env)
+    origin_head = tools.git_current_commit(origin)
+    checkpointer = build_memory_checkpointer()
+    worker = consumer.Worker(checkpointer)
+
+    _drive_to_completion(worker, checkpointer, "run-after", origin)
+
+    payload = outcomes[-1].payload
+    assert payload["terminal_state"] == "completed"
+    assert payload["commit_sha_after"], "the run must report the commit it produced"
+    assert payload["commit_sha_after"] != origin_head, (
+        "the produced commit is a new one, not the revision the run cloned"
+    )
+    assert outcomes[-1].git_target.commit_sha == origin_head, (
+        "git_target.commit_sha keeps its contract meaning: where the run started"
+    )
+
+
+def test_a_completed_run_publishes_its_change_when_configured(
+    worker_env: Path, origin: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """End to end through the worker: the change outlives the run that made it."""
+    monkeypatch.setenv("PUBLISH_MODE", "branch")
+    outcomes = _published(monkeypatch)
+    _brownfield_fixture(worker_env)
+    checkpointer = build_memory_checkpointer()
+    worker = consumer.Worker(checkpointer)
+
+    _drive_to_completion(worker, checkpointer, "run-deliver", origin)
+
+    payload = outcomes[-1].payload
+    assert payload["published"] is True
+    assert payload["branch"] == "agentic-patch/run-deliver"
+
+    branches = subprocess.run(
+        ["git", "branch", "--list", "--format=%(refname:short)"],
+        cwd=origin,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert "agentic-patch/run-deliver" in branches
+    assert not workspace.workspace_for("run-deliver").exists(), (
+        "the workspace is still reclaimed; the change survived it"
+    )
+
+
+def test_a_delivery_failure_does_not_fail_an_approved_run(
+    worker_env: Path, origin: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The gate approved it. A push problem is reported, not converted into a failure."""
+    monkeypatch.setenv("PUBLISH_MODE", "branch")
+    outcomes = _published(monkeypatch)
+    _brownfield_fixture(worker_env)
+    monkeypatch.setattr(
+        publish, "_push_branch", lambda *a, **k: (_ for _ in ()).throw(publish.PublishError("no remote"))
+    )
+    checkpointer = build_memory_checkpointer()
+    worker = consumer.Worker(checkpointer)
+
+    _drive_to_completion(worker, checkpointer, "run-nopush", origin)
+
+    payload = outcomes[-1].payload
+    assert payload["terminal_state"] == "completed", "the run is not failed by a delivery problem"
+    assert payload["published"] is False
+    assert "no remote" in payload["publish_error"], "and the reason is loud on the event"
 
 
 def test_workspace_is_cleaned_up_on_a_terminal_state(
